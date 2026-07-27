@@ -36,6 +36,7 @@ export default function Game() {
   const [ended, setEnded] = useState(false);
   const [hud, setHud] = useState<Hud>({ score: 0, people: 0, combo: 1, size: 1, time: 90, destroyed: 0 });
   const gameRef = useRef({ start: () => {}, restart: () => {} });
+  const performanceRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!mount.current) return;
@@ -51,6 +52,9 @@ export default function Game() {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Preserve counters across the world and GPU post-processing passes. They
+    // are reset explicitly once per frame below.
+    renderer.info.autoReset = false;
     host.appendChild(renderer.domElement);
     renderer.domElement.style.cursor = "grab";
     const drawingSize=new THREE.Vector2();renderer.getDrawingBufferSize(drawingSize);
@@ -309,7 +313,7 @@ export default function Game() {
     const morningSky=new THREE.Color(0x788b86),noonSky=new THREE.Color(0x91aaa5),eveningSky=new THREE.Color(0x6f625c);
     const morningSun=new THREE.Color(0xffc78c),noonSun=new THREE.Color(0xfff2d2),eveningSun=new THREE.Color(0xff8b58);
     const morningHemi=new THREE.Color(0xc5d2c9),noonHemi=new THREE.Color(0xe2ebe2),eveningHemi=new THREE.Color(0xb18f82);
-    const nightSky=new THREE.Color(0x101b24),nightSun=new THREE.Color(0x627083),nightHemi=new THREE.Color(0x263746);
+    const nightSky=new THREE.Color(0x263743),nightSun=new THREE.Color(0x8794a2),nightHemi=new THREE.Color(0x526776);
     const phaseSky=new THREE.Color(),phaseSun=new THREE.Color(),phaseHemi=new THREE.Color();
 
     // Covered pedestrian bridges based on the reference: oxidized blue steel,
@@ -571,6 +575,17 @@ export default function Game() {
     const lampBeamGeometry=new THREE.ConeGeometry(4.8,5.3,16,1,true);
     const lampBeams:THREE.Mesh[]=[];
     const lampPools:THREE.PointLight[]=[];
+    const lampFixtures:{position:THREE.Vector3;beam:THREE.Mesh;groundPool:THREE.Mesh}[]=[];
+    const lampPoolCanvas=document.createElement("canvas");lampPoolCanvas.width=lampPoolCanvas.height=128;
+    const lampPoolContext=lampPoolCanvas.getContext("2d")!;
+    const lampPoolGradient=lampPoolContext.createRadialGradient(64,64,0,64,64,64);
+    lampPoolGradient.addColorStop(0,"rgba(255,211,112,.72)");
+    lampPoolGradient.addColorStop(.28,"rgba(255,191,72,.38)");
+    lampPoolGradient.addColorStop(.68,"rgba(255,174,48,.1)");
+    lampPoolGradient.addColorStop(1,"rgba(255,160,30,0)");
+    lampPoolContext.fillStyle=lampPoolGradient;lampPoolContext.fillRect(0,0,128,128);
+    const lampPoolTexture=new THREE.CanvasTexture(lampPoolCanvas);lampPoolTexture.colorSpace=THREE.SRGBColorSpace;
+    const lampPoolMaterial=new THREE.MeshBasicMaterial({map:lampPoolTexture,color:0xffd083,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending});
     const addStreetLamp=(x:number,z:number,vertical:boolean,side:number,index:number)=>{
       const g=new THREE.Group();g.position.set(x,0,z);scene.add(g);
       box(0,2.9,0,.15,5.8,.15,lampMetal,g);
@@ -589,11 +604,9 @@ export default function Game() {
       // silhouette of a real street lamp seen through humid night air.
       const beam=new THREE.Mesh(lampBeamGeometry,lampBeamMaterial);
       beam.position.set(headX,2.88,headZ);beam.renderOrder=1;g.add(beam);lampBeams.push(beam);
-      // A cheaper real light is shared at alternating fixtures; the visible beam
-      // still makes every lamp read as switched on.
-      if(index%2===0){
-        const pool=new THREE.PointLight(0xffb94f,0,10.5,2.15);pool.position.set(headX,.8,headZ);g.add(pool);lampPools.push(pool);
-      }
+      const groundPool=new THREE.Mesh(new THREE.PlaneGeometry(10.5,10.5),lampPoolMaterial);
+      groundPool.rotation.x=-Math.PI/2;groundPool.position.set(headX,.185,headZ);groundPool.renderOrder=1;g.add(groundPool);
+      lampFixtures.push({position:new THREE.Vector3(x+headX,.8,z+headZ),beam,groundPool});
     };
     let lampIndex=0;
     for(const road of verticalRoads)for(const side of [-1,1])for(let along=-72;along<=72;along+=18){
@@ -604,6 +617,12 @@ export default function Game() {
     for(const road of horizontalRoads)for(const side of [-1,1])for(let along=-72;along<=72;along+=18){
       if(verticalRoads.some(crossing=>Math.abs(along-crossing.at)<crossing.width/2+2))continue;
       addStreetLamp(along,road.at+side*(road.width/2+1.25),false,side,lampIndex++);
+    }
+    // Dozens of simultaneous point lights make WebGL compile and evaluate every
+    // surface against every light. Six pooled lights follow the nearest fixtures;
+    // all other lamps retain their inexpensive emissive head and GPU-blended pool.
+    for(let i=0;i<6;i++){
+      const pool=new THREE.PointLight(0xffb94f,0,10.5,2.15);pool.visible=false;scene.add(pool);lampPools.push(pool);
     }
 
     // Open iron fencing runs along lot edges in short sections, with deliberate
@@ -1130,6 +1149,8 @@ export default function Game() {
     renderer.compile(scene,camera);
     scene.remove(explosionWarmup);
     gameRef.current={start:()=>{active=true;finished=false;startAt=performance.now();setStarted(true);},restart};
+    let performanceFrames=0,performanceSampleAt=performance.now(),lampCullAt=0;
+    const viewProjection=new THREE.Matrix4(),viewFrustum=new THREE.Frustum();
     function animate(now:number){ requestAnimationFrame(animate); const dt=Math.min(.035,(now-last)/1000);last=now; const elapsed=active?(now-startAt)/1000:0; const remain=Math.max(0,90-elapsed);
       // One match travels from morning through noon and sunset into a visibly
       // dark final quarter, when the complete street-light network switches on.
@@ -1148,12 +1169,31 @@ export default function Game() {
       sun.color.copy(phaseSun);hemi.color.copy(phaseHemi);
       hemi.groundColor.set(dayProgress>.62?0x493b38:0x3f4840);
       const nightFactor=THREE.MathUtils.smoothstep(dayProgress,.7,.82);
-      const daylight=(dayProgress<.5?THREE.MathUtils.lerp(2.75,3.9,phaseT):THREE.MathUtils.lerp(3.9,.38,(dayProgress-.5)*2))*(1-nightFactor*.35);
-      hemi.intensity=(dayProgress<.5?THREE.MathUtils.lerp(2.25,3.05,phaseT):THREE.MathUtils.lerp(3.05,.48,(dayProgress-.5)*2))*(1-rainStrength*.16);
+      const daylight=(dayProgress<.5?THREE.MathUtils.lerp(2.75,3.9,phaseT):THREE.MathUtils.lerp(3.9,.78,(dayProgress-.5)*2))*(1-nightFactor*.15);
+      hemi.intensity=(dayProgress<.5?THREE.MathUtils.lerp(2.25,3.05,phaseT):THREE.MathUtils.lerp(3.05,.92,(dayProgress-.5)*2))*(1-rainStrength*.12);
       lampGlow.emissiveIntensity=nightFactor*5.5;
       lampGlow.color.setRGB(.43+.57*nightFactor,.41+.39*nightFactor,.3+.12*nightFactor);
-      lampBeamMaterial.opacity=nightFactor*(.105+rainStrength*.055);
-      for(const beam of lampBeams)beam.visible=nightFactor>.015;
+      // Most of the illumination is a feathered radial pool. The atmospheric
+      // cone remains only a faint hint, so its polygon edge never reads as a wall.
+      lampBeamMaterial.opacity=nightFactor*(.018+rainStrength*.016);
+      lampPoolMaterial.opacity=nightFactor*(.52+rainStrength*.16);
+      // Three already frustum-culls opaque meshes. Transparent lamp effects need
+      // an explicit fixture-level visibility pass because their large bounds can
+      // otherwise survive well outside the useful view.
+      if(now-lampCullAt>250){
+        lampCullAt=now;camera.updateMatrixWorld();viewProjection.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);viewFrustum.setFromProjectionMatrix(viewProjection);
+        const candidates:{fixture:(typeof lampFixtures)[number];distance:number}[]=[];
+        for(const fixture of lampFixtures){
+          const visible=nightFactor>.015&&viewFrustum.containsPoint(fixture.position)&&fixture.position.distanceToSquared(camera.position)<10500;
+          fixture.beam.visible=visible;fixture.groundPool.visible=visible;
+          if(visible)candidates.push({fixture,distance:fixture.position.distanceToSquared(player.position)});
+        }
+        candidates.sort((a,b)=>a.distance-b.distance);
+        for(let i=0;i<lampPools.length;i++){
+          const candidate=candidates[i];lampPools[i].visible=!!candidate;
+          if(candidate)lampPools[i].position.copy(candidate.fixture.position);
+        }
+      }
       for(const pool of lampPools)pool.intensity=nightFactor*(2.2+rainStrength*.8);
       sun.position.x=THREE.MathUtils.lerp(-62,48,dayProgress);sun.position.z=THREE.MathUtils.lerp(26,-38,dayProgress);
       if(now>=weatherChangeAt){
@@ -1443,7 +1483,16 @@ export default function Game() {
       const desired=new THREE.Vector3(player.position.x+Math.sin(cameraYaw)*cameraDistance,48+radius*1.5,player.position.z+Math.cos(cameraYaw)*cameraDistance);camera.position.lerp(desired,1-Math.pow(.001,dt));camera.lookAt(player.position.x,0,player.position.z);
       const pulse=1+Math.sin(now*.006)*.018;wormMass.scale.setScalar(pulse);
       if(explosionShake>0){camera.position.x+=(rng()-.5)*explosionShake;camera.position.y+=(rng()-.5)*explosionShake*.55;camera.position.z+=(rng()-.5)*explosionShake;}
+      renderer.info.reset();
       renderer.setRenderTarget(renderTarget);renderer.render(scene,camera);renderer.setRenderTarget(null);renderer.render(postScene,postCamera);
+      performanceFrames++;
+      if(now-performanceSampleAt>=500&&performanceRef.current){
+        let modelCount=0;
+        scene.traverse(object=>{if((object as THREE.Mesh).isMesh&&object.visible)modelCount++;});
+        const fps=Math.round(performanceFrames*1000/(now-performanceSampleAt));
+        performanceRef.current.innerHTML=`<span>模型 <b>${modelCount.toLocaleString()}</b></span><span>面 <b>${renderer.info.render.triangles.toLocaleString()}</b></span><span>FPS <b>${fps}</b></span>`;
+        performanceFrames=0;performanceSampleAt=now;
+      }
     }
     requestAnimationFrame(animate);
     const resize=()=>{camera.aspect=host.clientWidth/host.clientHeight;camera.updateProjectionMatrix();renderer.setSize(host.clientWidth,host.clientHeight);renderer.getDrawingBufferSize(drawingSize);renderTarget.setSize(drawingSize.x,drawingSize.y);postMaterial.uniforms.resolution.value.copy(drawingSize);};window.addEventListener("resize",resize);
@@ -1453,7 +1502,7 @@ export default function Game() {
   return <main className="game-shell">
     <div ref={mount} className="viewport" aria-label="城市破坏游戏画面" />
     <header className="topbar"><div><span className="eyebrow">CITY DESTRUCTION</span><strong>{hud.destroyed}<small> BUILDINGS</small></strong></div><div className="rage"><span>RAGE</span><i><b style={{width:`${Math.min(100,hud.combo*6)}%`}}/></i></div><div className="timer">{String(Math.floor(hud.time/60)).padStart(2,"0")}:{String(hud.time%60).padStart(2,"0")}</div></header>
-    <section className="broadcast"><span className="live">LIVE</span><div><small>ESTIMATED DAMAGE</small><strong>${hud.score.toLocaleString()}</strong></div><div><small>HUMAN CASUALTIES</small><strong>{hud.people}</strong></div><div className="ticker">LATEST DEVELOPMENT <b>LOCAL POLICE INVESTIGATING</b></div></section>
+    <section className="broadcast"><span className="live">LIVE</span><div><small>ESTIMATED DAMAGE</small><strong>${hud.score.toLocaleString()}</strong></div><div><small>HUMAN CASUALTIES</small><strong>{hud.people}</strong></div><div className="ticker">LATEST DEVELOPMENT <b>LOCAL POLICE INVESTIGATING</b></div><div ref={performanceRef} className="performance"><span>模型 <b>—</b></span><span>面 <b>—</b></span><span>FPS <b>—</b></span></div></section>
     {started&&!ended&&<div className="combo" key={hud.combo}>{hud.combo>2&&<>COMBO <b>×{hud.combo}</b></>}</div>}
     {!started&&!ended&&<section className="menu"><p className="kicker">A CITY HAS 90 SECONDS LEFT</p><h1>TYPHOON<br/><em>TERROR</em></h1><p>吞噬街道，撕碎城市。越大，就能摧毁越大的目标。</p><button onClick={()=>gameRef.current.start()}>开始灾难 <span>ENTER</span></button><div className="controls"><span><kbd>WASD</kbd> 移动</span><span><kbd>SHIFT</kbd> 冲刺</span><span><kbd>鼠标拖动</kbd> 旋转视角</span></div></section>}
     {ended&&<section className="menu result"><p className="kicker">90 SECONDS OF TOTAL CHAOS</p><h2>CITY REPORT</h2><div className="stats"><span>损失金额<b>${hud.score.toLocaleString()}</b></span><span>建筑摧毁<b>{hud.destroyed}</b></span><span>最大体积<b>{hud.size.toFixed(1)}×</b></span></div><button onClick={()=>gameRef.current.restart()}>再次破坏</button></section>}

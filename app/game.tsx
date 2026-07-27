@@ -1366,8 +1366,11 @@ export default function Game() {
         if(wantsStop&&agent.speed<.3)agent.brakeSpeed=0;
         if(agent.state==="parked"&&!agent.crewDeployed){agent.crewDeployed=true;const crewKind=agent.kind==="fire"?"firefighter":agent.kind==="swat"?"swat":"police";spawnPerson(agent,crewKind,-1);spawnPerson(agent,crewKind,1);}
         if(agent.crash){
-          agent.crash.age+=dt;const growth=THREE.MathUtils.clamp(agent.crash.age/4.2,0,1);agent.crash.smoke.scale.setScalar(.25+growth*2.5);agent.crash.flame.scale.setScalar(.08+growth*1.35);
-          (agent.crash.smoke.material as THREE.SpriteMaterial).opacity=.25+growth*.42;(agent.crash.flame.material as THREE.SpriteMaterial).opacity=.25+growth*.7;
+          agent.crash.age+=dt;const growth=THREE.MathUtils.clamp(agent.crash.age/4.2,0,1);agent.crash.smoke.scale.setScalar(.25+growth*2.5);
+          // Below a readable flame size the post-process turns the sprite into a
+          // stray bright pixel, so keep it fully hidden until a flame silhouette exists.
+          agent.crash.flame.visible=growth>.14;agent.crash.flame.scale.setScalar(.55+growth*.95);
+          (agent.crash.smoke.material as THREE.SpriteMaterial).opacity=.25+growth*.42;(agent.crash.flame.material as THREE.SpriteMaterial).opacity=agent.crash.flame.visible?.35+growth*.6:0;
           if(agent.crash.age>5.2){const target=targets.find(t=>t.mesh===agent.mesh&&t.alive);if(target)collect(target);agent.crash=undefined;}
         }
       }
@@ -1414,7 +1417,7 @@ export default function Game() {
       for(let i=wrecks.length-1;i>=0;i--){
         const wreck=wrecks[i];wreck.life-=dt;const decay=THREE.MathUtils.clamp(wreck.life/wreck.maxLife,0,1);
         wreck.group.scale.set(1,.58,1).multiplyScalar(.72+.28*decay);(wreck.scorch.material as THREE.MeshBasicMaterial).opacity=.64*Math.min(1,decay*3);
-        for(const flame of wreck.flames){flame.scale.setScalar((.25+.9*rng())*decay);(flame.material as THREE.SpriteMaterial).opacity=.85*decay;}
+        for(const flame of wreck.flames){const readable=decay>.2;flame.visible=readable;flame.scale.setScalar(readable?(.62+.72*rng())*(.72+.28*decay):0);(flame.material as THREE.SpriteMaterial).opacity=readable?.85*decay:0;}
         for(const smoke of wreck.smoke){smoke.position.y+=dt*(.35+.5*decay);smoke.scale.setScalar((1.2+rng())*decay);(smoke.material as THREE.SpriteMaterial).opacity=.48*decay;}
         if(wreck.life<=0){scene.remove(wreck.group,wreck.scorch);wreck.scorch.geometry.dispose();(wreck.scorch.material as THREE.Material).dispose();for(const particle of [...wreck.flames,...wreck.smoke]){scene.remove(particle);(particle.material as THREE.Material).dispose();}wrecks.splice(i,1);}
       }

@@ -991,7 +991,7 @@ export default function Game() {
     player.position.set(-54,1.1,-70);
     const shadow=new THREE.Mesh(new THREE.CircleGeometry(2,24),new THREE.MeshBasicMaterial({color:0x1b0d0b,transparent:true,opacity:.35,depthWrite:false})); shadow.rotation.x=-Math.PI/2; shadow.position.y=-1; player.add(shadow);
 
-    type Responder={mesh:THREE.Group;kind:"police"|"swat"|"firefighter";source:VehicleAgent;side:number;cooldown:number;hose?:THREE.Line};
+    type Responder={mesh:THREE.Group;target:Target;kind:"police"|"swat"|"firefighter";source:VehicleAgent;side:number;cooldown:number;hose?:THREE.Line};
     type Wreck={group:THREE.Group;scorch:THREE.Mesh;flames:THREE.Sprite[];smoke:THREE.Sprite[];life:number;maxLife:number};
     const responders:Responder[]=[],wrecks:Wreck[]=[],tracers:{line:THREE.Line;life:number}[]=[],skidMarks:{mesh:THREE.Mesh;born:number}[]=[],evacuees:{mesh:THREE.Group;direction:THREE.Vector3;gait:number}[]=[];
     let nextPoliceDispatch=4500,nextFireDispatch=7000;
@@ -1000,7 +1000,8 @@ export default function Game() {
       box(0,.85,0,.42,1.05,.34,kind==="firefighter"?0xd7a52b:kind==="swat"?0x172126:0x294c68,g);
       const head=new THREE.Mesh(sphereGeo,mat(0xc78d68));head.scale.setScalar(.24);head.position.y=1.55;g.add(head);
       if(kind!=="firefighter")box(0,1.05,.32,.08,.08,.7,kind==="swat"?0x111716:0x292a29,g);
-      const responder:Responder={mesh:g,kind,source:vehicle,side,cooldown:rng()};
+      const target:Target={mesh:g,radius:.45,height:1.75,value:kind==="swat"?1800:1200,kind:"person",minSize:.72,alive:true};targets.push(target);
+      const responder:Responder={mesh:g,target,kind,source:vehicle,side,cooldown:rng()};
       if(kind==="firefighter"){
         const geometry=new THREE.BufferGeometry().setFromPoints([vehicle.mesh.position.clone(),g.position.clone()]);
         const hose=new THREE.Line(geometry,new THREE.LineBasicMaterial({color:0x342d22}));scene.add(hose);responder.hose=hose;
@@ -1361,7 +1362,7 @@ export default function Game() {
       for(const evacuee of evacuees){evacuee.gait+=dt*13;const away=evacuee.mesh.position.clone().sub(player.position).setY(0).normalize();evacuee.direction.lerp(away,.12).normalize();evacuee.mesh.position.addScaledVector(evacuee.direction,5.5*dt);evacuee.mesh.rotation.y=Math.atan2(evacuee.direction.x,evacuee.direction.z);evacuee.mesh.position.y=.05+Math.abs(Math.sin(evacuee.gait))*.08;}
       for(let i=skidMarks.length-1;i>=0;i--){const mark=skidMarks[i],age=(now-mark.born)/1000;(mark.mesh.material as THREE.MeshBasicMaterial).opacity=.62*THREE.MathUtils.clamp((18-age)/7,0,1);if(age>18){scene.remove(mark.mesh);mark.mesh.geometry.dispose();(mark.mesh.material as THREE.Material).dispose();skidMarks.splice(i,1);}}
       for(const responder of responders){
-        if(!responder.mesh.parent)continue;responder.cooldown-=dt;
+        if(!responder.target.alive||!responder.mesh.parent){if(responder.hose?.parent){scene.remove(responder.hose);responder.hose.geometry.dispose();(responder.hose.material as THREE.Material).dispose();}continue;}responder.cooldown-=dt;
         const destination=responder.kind==="firefighter"?responder.source.target:player.position;
         if(!destination)continue;const delta=destination.clone().sub(responder.mesh.position).setY(0),distance=delta.length();
         const range=responder.kind==="swat"?19:responder.kind==="police"?12:7;

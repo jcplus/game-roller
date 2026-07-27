@@ -1,98 +1,148 @@
-# vinext-starter
+# Typhoon Terror
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+一个运行在浏览器中的俯视角城市破坏游戏原型。玩家操控由寄生体缠绕形成的血肉团块，在城市中滚动、捕食生物、增加质量，并通过触手和撞击破坏环境。
 
-## Prerequisites
+## 当前玩法
+
+- 使用团子在城市中移动，并以摄像机方向为基准控制前后左右。
+- 鼠标或触屏拖动可旋转视角。
+- 触手会感知附近生物，伸出后将目标绞碎。
+- 吞噬生物会增加寄生体数量、宽度、总体积和质量。
+- 质量越大，加速和制动越迟缓。
+- 树木可被触手或团子撞碎，但不会被吸收。
+- 建筑、车辆、树木和人体碎片具有不同的破坏与清理规则。
+- 90 秒内通过破坏金额、连击、伤亡和建筑摧毁数量结算分数。
+
+## 操作
+
+| 操作 | 按键 |
+| --- | --- |
+| 前后左右移动 | `W` `A` `S` `D` / 方向键 |
+| 加速 | `Shift` |
+| 旋转视角 | 鼠标或触屏水平拖动 |
+
+移动方向始终相对于当前摄像机视角。
+
+## 技术栈
+
+- TypeScript
+- React 19
+- Three.js
+- vinext / Vite
+- Cloudflare Workers / Sites
+
+游戏循环和 Three.js 场景直接运行在客户端；React 负责页面入口和 HUD。
+
+## 本地开发
+
+### 环境要求
 
 - Node.js `>=22.13.0`
 
-## Quick Start
+### 安装与启动
 
 ```bash
 npm install
 npm run dev
+```
+
+开发地址：<http://localhost:30100/>
+
+生产构建与本地预览：
+
+```bash
+npm run build
+npm run start
+```
+
+生产预览地址：<http://localhost:30101/>
+
+端口使用 `strictPort`，端口被占用时服务会直接报错，不会自动切换到其他端口。
+
+## 主要系统
+
+### 程序化城市
+
+城市按照以下空间层级生成：
+
+1. 道路与路口
+2. 白色道牙
+3. 独立地块
+4. 环绕人行道与内部步道
+5. 草地、空地与树木
+6. 根据地块面积生成的建筑
+7. 车辆、警车和行人
+
+树木只生成在地块空地中，不会出现在道路或路口。
+
+### 团子成长
+
+团子的成长不是整体等比例缩放：
+
+- 每吞噬一个生物，外围增加一条寄生体。
+- 现有寄生体逐渐变宽，但最大为初始宽度的 `1.5×`。
+- 碰撞范围和阴影随实际体积增长。
+- 质量根据吞噬数量增长，并影响加速、最大速度和制动距离。
+
+### 触手
+
+- 外围触手随团子滚动。
+- 触手受地面、树木、车辆和建筑碰撞约束。
+- 同一人物最多同时被三根触手锁定。
+- 人体碎裂后，碎片会成为独立目标，并由触手逐块回收。
+
+### 破坏与碎片
+
+- 人体碎裂为 5–10 块，溅射方向和距离由触手冲击方向及力度决定。
+- 血肉碎片落地、反弹和滚动时会留下像素血线，随后因摩擦停止。
+- 树木碎成大型树干和树冠块，在第 10 秒和第 20 秒继续分裂，第 30 秒清理。
+- 动态碎片、血迹和临时资源均设有数量或时间上限。
+
+### 视觉风格
+
+场景保持完整渲染分辨率，通过以下方式形成粗糙的低质量转播观感：
+
+- 关闭 MSAA
+- 硬边阴影
+- 色阶量化
+- 轻度锐化和噪点
+- 像素化草地、血肉、叶片和血迹贴图
+- 暗部提升，避免黑位丢失
+
+HUD 不经过场景后处理，保持清晰可读。
+
+## 项目结构
+
+```text
+app/
+├── game.tsx       # Three.js 场景、游戏循环和玩法系统
+├── globals.css    # HUD、菜单和响应式样式
+├── layout.tsx     # 页面元数据与根布局
+└── page.tsx       # 游戏入口
+
+worker/
+└── index.ts       # Cloudflare Worker 入口
+
+.openai/
+└── hosting.json   # Sites 项目与可选资源声明
+```
+
+## 常用命令
+
+```bash
+npm run dev         # 启动开发服务，端口 30100
+npm run build       # 构建 Cloudflare 兼容产物
+npm run start       # 启动生产预览，端口 30101
+npm test            # 构建并运行项目测试
+npm run lint        # 运行静态检查
+```
+
+## 部署
+
+构建输出兼容 Cloudflare Workers / Sites。部署前应先运行：
+
+```bash
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
-
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+上传源码、构建产物或发布生产版本属于外部操作，需要明确授权后执行。

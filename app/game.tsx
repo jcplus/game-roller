@@ -49,18 +49,29 @@ export default function Game() {
         uniform sampler2D tDiffuse;uniform vec2 resolution;varying vec2 vUv;
         float noise(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
         void main(){
-          vec2 px=1.0/resolution;
-          vec3 base=texture2D(tDiffuse,vUv).rgb;
-          vec3 neighbors=(texture2D(tDiffuse,vUv+vec2(px.x,0.0)).rgb+
-            texture2D(tDiffuse,vUv-vec2(px.x,0.0)).rgb+
-            texture2D(tDiffuse,vUv+vec2(0.0,px.y)).rgb+
-            texture2D(tDiffuse,vUv-vec2(0.0,px.y)).rgb)*.25;
+          // Deliberately coarse, unstable sampling recreates a late-90s console framebuffer.
+          vec2 virtualResolution=vec2(426.0,240.0);
+          vec2 snappedUv=(floor(vUv*virtualResolution)+.5)/virtualResolution;
+          float row=floor(snappedUv.y*virtualResolution.y);
+          snappedUv.x+=(noise(vec2(row,floor(row/3.0)))-.5)/resolution.x*.7;
+          vec2 px=1.0/virtualResolution;
+          vec3 base;
+          base.r=texture2D(tDiffuse,snappedUv+vec2(px.x*.28,0.0)).r;
+          base.g=texture2D(tDiffuse,snappedUv).g;
+          base.b=texture2D(tDiffuse,snappedUv-vec2(px.x*.24,0.0)).b;
+          vec3 neighbors=(texture2D(tDiffuse,snappedUv+vec2(px.x,0.0)).rgb+
+            texture2D(tDiffuse,snappedUv-vec2(px.x,0.0)).rgb+
+            texture2D(tDiffuse,snappedUv+vec2(0.0,px.y)).rgb+
+            texture2D(tDiffuse,snappedUv-vec2(0.0,px.y)).rgb)*.25;
           vec3 c=base+(base-neighbors)*.14;
           c=pow(max(c,vec3(0.0)),vec3(.62));
           c=(c-.5)*1.04+.59;
           float l=dot(c,vec3(.299,.587,.114));c=mix(vec3(l),c,1.08);
-          c.b*=.96;c.g*=.99;c=floor(clamp(c,0.0,1.0)*28.0+.5)/28.0;
-          c+=((noise(gl_FragCoord.xy)-.5)/85.0);
+          c.b*=.94;c.g*=.98;
+          float dither=mod(floor(gl_FragCoord.x/2.0)+floor(gl_FragCoord.y/2.0)*2.0,4.0)/4.0-.375;
+          c=floor(clamp(c+dither/22.0,0.0,1.0)*18.0+.5)/18.0;
+          c+=((noise(floor(gl_FragCoord.xy/2.0))-.5)/48.0);
+          c*=.965+.035*mod(floor(gl_FragCoord.y),2.0);
           gl_FragColor=vec4(c,1.0);
         }`,
       depthTest:false,depthWrite:false,toneMapped:false,
@@ -194,22 +205,37 @@ export default function Game() {
     const rain=new THREE.LineSegments(rainGeometry,rainMaterial);rain.frustumCulled=false;scene.add(rain);
     // Local wet decals work like the blood decals: transparent irregular patches
     // darken only the covered asphalt instead of turning the whole road metallic.
-    const wetCanvas=document.createElement("canvas");wetCanvas.width=wetCanvas.height=128;const wetContext=wetCanvas.getContext("2d")!;
-    for(let i=0;i<11;i++){
-      const cx=22+weatherRandom()*84,cy=25+weatherRandom()*78,rx=10+weatherRandom()*30,ry=5+weatherRandom()*17;
-      const gradient=wetContext.createRadialGradient(cx,cy,0,cx,cy,Math.max(rx,ry));
-      gradient.addColorStop(0,"rgba(39,77,79,.72)");gradient.addColorStop(.62,"rgba(45,82,83,.46)");gradient.addColorStop(1,"rgba(49,83,84,0)");
-      wetContext.save();wetContext.translate(cx,cy);wetContext.scale(rx/Math.max(rx,ry),ry/Math.max(rx,ry));wetContext.translate(-cx,-cy);
-      wetContext.fillStyle=gradient;wetContext.fillRect(cx-Math.max(rx,ry),cy-Math.max(rx,ry),Math.max(rx,ry)*2,Math.max(rx,ry)*2);wetContext.restore();
+    const wetPatchMaterials:THREE.MeshStandardMaterial[]=[];
+    // Several independently generated masks avoid the repeated "decal stamp" look.
+    for(let variant=0;variant<5;variant++){
+      const wetCanvas=document.createElement("canvas");wetCanvas.width=wetCanvas.height=128;const wetContext=wetCanvas.getContext("2d")!;
+      for(let i=0;i<14+variant;i++){
+        const cx=18+weatherRandom()*92,cy=20+weatherRandom()*88,rx=8+weatherRandom()*35,ry=3+weatherRandom()*17;
+        const gradient=wetContext.createRadialGradient(cx,cy,0,cx,cy,Math.max(rx,ry));
+        gradient.addColorStop(0,"rgba(25,64,68,.9)");gradient.addColorStop(.58,"rgba(38,78,81,.65)");gradient.addColorStop(1,"rgba(48,85,87,0)");
+        wetContext.save();wetContext.translate(cx,cy);wetContext.rotate((weatherRandom()-.5)*.65);wetContext.scale(rx/Math.max(rx,ry),ry/Math.max(rx,ry));wetContext.translate(-cx,-cy);
+        wetContext.fillStyle=gradient;wetContext.fillRect(cx-Math.max(rx,ry),cy-Math.max(rx,ry),Math.max(rx,ry)*2,Math.max(rx,ry)*2);wetContext.restore();
+      }
+      // Thin runoff fingers and small satellite pools break up every shoreline.
+      wetContext.lineCap="round";
+      for(let i=0;i<24;i++){
+        wetContext.strokeStyle=`rgba(30,70,74,${.1+weatherRandom()*.3})`;wetContext.lineWidth=.5+weatherRandom()*3;
+        wetContext.beginPath();const x=weatherRandom()*128,y=weatherRandom()*128;wetContext.moveTo(x,y);
+        wetContext.quadraticCurveTo(x+(weatherRandom()-.5)*35,y+(weatherRandom()-.5)*12,x+(weatherRandom()-.5)*60,y+(weatherRandom()-.5)*22);wetContext.stroke();
+      }
+      for(let i=0;i<110;i++){wetContext.fillStyle=`rgba(28,68,71,${.08+weatherRandom()*.28})`;wetContext.fillRect(weatherRandom()*128,weatherRandom()*128,.5+weatherRandom()*4,.5+weatherRandom()*2);}
+      const wetTexture=new THREE.CanvasTexture(wetCanvas);wetTexture.colorSpace=THREE.SRGBColorSpace;wetTexture.magFilter=THREE.LinearFilter;
+      wetPatchMaterials.push(new THREE.MeshStandardMaterial({map:wetTexture,transparent:true,opacity:.26,depthWrite:false,roughness:.7,metalness:0,color:0x5d8588,polygonOffset:true,polygonOffsetFactor:-1}));
     }
-    for(let i=0;i<70;i++){wetContext.fillStyle=`rgba(32,66,68,${.08+weatherRandom()*.16})`;wetContext.fillRect(weatherRandom()*128,weatherRandom()*128,1+weatherRandom()*4,1+weatherRandom()*2);}
-    const wetTexture=new THREE.CanvasTexture(wetCanvas);wetTexture.colorSpace=THREE.SRGBColorSpace;wetTexture.magFilter=THREE.LinearFilter;
-    const wetPatchMaterial=new THREE.MeshStandardMaterial({map:wetTexture,transparent:true,opacity:.18,depthWrite:false,roughness:.72,metalness:0,color:0x66888a});
-    for(let i=0;i<42;i++){
-      const vertical=weatherRandom()>.5,lane=[-54,0,54][Math.floor(weatherRandom()*3)],along=-80+weatherRandom()*160;
-      const patch=new THREE.Mesh(new THREE.PlaneGeometry(3+weatherRandom()*8,2+weatherRandom()*5),wetPatchMaterial);
-      patch.rotation.x=-Math.PI/2;patch.rotation.z=weatherRandom()*Math.PI;
-      patch.position.set(vertical?lane+(weatherRandom()-.5)*14:along,.142,vertical?along:lane+(weatherRandom()-.5)*14);scene.add(patch);
+    // Dense puddle fields: broad pools collect near lane edges, while smaller
+    // irregular remnants are scattered through tyre tracks and intersections.
+    for(let i=0;i<145;i++){
+      const vertical=weatherRandom()>.5,lane=[-54,0,54][Math.floor(weatherRandom()*3)],along=-82+weatherRandom()*164;
+      const edgeBiased=weatherRandom()>.38,across=edgeBiased?(weatherRandom()>.5?1:-1)*(5.2+weatherRandom()*2.2):(weatherRandom()-.5)*9.5;
+      const broad=i<48,width=broad?7+weatherRandom()*11:1.8+weatherRandom()*6,height=broad?3+weatherRandom()*6:.8+weatherRandom()*3.2;
+      const patch=new THREE.Mesh(new THREE.PlaneGeometry(width,height),wetPatchMaterials[i%wetPatchMaterials.length]);
+      patch.rotation.x=-Math.PI/2;patch.rotation.z=(vertical?0:Math.PI/2)+(weatherRandom()-.5)*(broad?.42:1.35);
+      patch.position.set(vertical?lane+across:along,.143+(i%5)*.0004,vertical?along:lane+across);scene.add(patch);
     }
     let raining=true,rainStrength=0,roadWetness=.42,weatherChangeAt=performance.now()+9000+weatherRandom()*9000;
     const dryRoadColor=new THREE.Color(0x87aeb0),wetRoadColor=new THREE.Color(0x496f74);
@@ -511,11 +537,66 @@ export default function Game() {
       policeLights.push({red:redMat,blue:blueMat,redGlow,blueGlow,redPoint,bluePoint,redSprite,blueSprite});
       targets.push({mesh:g,radius:2.25,height:1.9,value:12500,kind:"car",minSize:1.55,alive:true});
     };
+    const addFireTruck=(x:number,z:number,rot=0)=>{
+      const g=new THREE.Group();g.position.set(x,1.02,z);g.rotation.y=rot;scene.add(g);
+      const fireRed=0xb72e24,darkRed=0x641b19,trim=0xd9d3bb,metal=0x747d7a;
+      // Long cab-over fire engine with a raised equipment body.
+      box(-1.8,-.08,0,2.15,1.38,2.05,fireRed,g);
+      box(.9,.05,0,3.45,1.72,2.08,darkRed,g);
+      box(.95,.16,0,3.22,1.42,2.13,fireRed,g);
+      // A proper squared cab: roof brow, two-piece front glass, grille and lamps.
+      box(-1.82,1.03,0,2.05,.2,2.14,darkRed,g);
+      box(-2.48,.58,-.52,.075,.62,.82,0x78a6a7,g);
+      box(-2.48,.58,.52,.075,.62,.82,0x78a6a7,g);
+      box(-2.53,-.12,0,.08,.46,1.12,0x2b3030,g);
+      for(let bar=-.36;bar<=.36;bar+=.18)box(-2.58,-.12,bar,.055,.31,.045,0xb9b7aa,g);
+      box(-2.6,-.46,0,.2,.18,2.18,trim,g);
+      box(-2.62,.08,-.76,.08,.3,.32,0xffe6a2,g);
+      box(-2.62,.08,.76,.08,.3,.32,0xffe6a2,g);
+      box(-2.63,-.2,-.76,.07,.16,.25,0xca2820,g);
+      box(-2.63,-.2,.76,.07,.16,.25,0xca2820,g);
+      box(2.7,-.38,0,.18,.2,2.16,trim,g);
+      // Windscreen, side windows and cream department stripe.
+      for(const side of [-1,1]){
+        box(-1.7,.57,side*1.055,.82,.58,.055,0x263c42,g);
+        box(-1.08,.57,side*1.058,.34,.58,.05,fireRed,g);
+        box(-1.55,-.12,side*1.075,.07,.3,.06,trim,g);
+        box(.38,.15,side*1.085,3.92,.24,.055,trim,g);
+        // Equipment compartment doors, handles and rolled hose outlets.
+        for(let px=-.3;px<=2.05;px+=.78){
+          box(px,.42,side*1.09,.66,.88,.04,0x98251f,g);
+          box(px,.52,side*1.125,.23,.055,.035,trim,g);
+        }
+        const hose=new THREE.Mesh(cylGeo,mat(0xd1b355));hose.rotation.x=Math.PI/2;hose.position.set(1.9,.42,side*1.14);hose.scale.set(.28,.06,.28);g.add(hose);
+      }
+      // Roof ladder, rails, rear water cannon and side piping.
+      for(const side of [-1,1])box(.65,1.28,side*.72,3.65,.12,.13,metal,g);
+      for(let px=-1;px<=2.2;px+=.48)box(px,1.28,0,.08,.1,1.5,metal,g);
+      box(.65,1.25,0,3.65,.1,.12,trim,g);
+      const cannonBase=new THREE.Mesh(cylGeo,mat(metal));cannonBase.position.set(2.02,1.18,0);cannonBase.scale.set(.34,.22,.34);g.add(cannonBase);
+      const cannon=box(2.28,1.48,0,.75,.13,.13,trim,g);cannon.rotation.z=-.32;
+      for(const side of [-1,1])box(.55,-.58,side*1.12,3.75,.12,.12,0xb7a998,g);
+      // Six wheels support the longer silhouette.
+      for(const xx of [-1.75,.8,2.05])for(const zz of [-1.08,1.08]){
+        const wheel=new THREE.Mesh(cylGeo,mat(0x111416));wheel.scale.set(.48,.25,.48);wheel.rotation.x=Math.PI/2;wheel.position.set(xx,-.73,zz);g.add(wheel);
+        const hub=new THREE.Mesh(cylGeo,mat(0xb7b8ae));hub.scale.set(.21,.265,.21);hub.rotation.x=Math.PI/2;hub.position.set(xx,-.73,zz);g.add(hub);
+      }
+      // Alternating red emergency beacons reuse the game's bloom texture.
+      for(const side of [-1,1]){
+        const beaconMat=new THREE.MeshStandardMaterial({color:0xff3128,emissive:0xff160c,emissiveIntensity:2.8,roughness:.25});
+        const beacon=new THREE.Mesh(cylGeo,beaconMat);beacon.position.set(-1.7,1.25,side*.65);beacon.scale.set(.18,.16,.18);g.add(beacon);
+        const glowMat=new THREE.SpriteMaterial({map:glowTexture,color:0xff291c,transparent:true,opacity:.62,depthWrite:false,blending:THREE.AdditiveBlending});
+        const glow=new THREE.Sprite(glowMat);glow.position.copy(beacon.position);glow.scale.set(3.8,3.8,1);g.add(glow);
+      }
+      targets.push({mesh:g,radius:3.25,height:2.55,value:18000,kind:"car",minSize:1.85,alive:true});
+    };
     const roadVals=[-54,0,54];
     for(let i=0;i<36;i++) {
       const vertical=rng()>.5, lane=(rng()>.5?1:-1)*4.2, main=roadVals[Math.floor(rng()*3)], along=-78+rng()*156;
       const x=vertical?main+lane:along, z=vertical?along:main+lane, rot=vertical?0:Math.PI/2;
-      if(i%3===0) addPoliceCar(x,z,rot); else addCar(x,z,[0xd7c850,0xa93f39,0x507c8b,0xddd9c7,0x24292e][i%5],rot);
+      if(i%9===0)addFireTruck(x,z,rot);
+      else if(i%3===0) addPoliceCar(x,z,rot);
+      else addCar(x,z,[0xd7c850,0xa93f39,0x507c8b,0xddd9c7,0x24292e][i%5],rot);
     }
 
     const foliagePalettes=[
@@ -657,6 +738,12 @@ export default function Game() {
     const keys=new Set<string>(); let active=false, finished=false, startAt=0, last=performance.now(), score=0, people=0, combo=1, destroyed=0, radius=BASE_RADIUS, comboAt=0;
     let cameraYaw=Math.PI/4, dragging=false, dragX=0;
     const debris:{mesh:THREE.Mesh;vel:THREE.Vector3;spin:THREE.Vector3;life:number;bloody?:boolean;lastTrail?:THREE.Vector3}[]=[];
+    const explosions:{
+      sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean}[];
+      sparks:{mesh:THREE.Mesh;velocity:THREE.Vector3;age:number;life:number}[];
+      ring:THREE.Mesh;light:THREE.PointLight;age:number;life:number;
+    }[]=[];
+    let explosionShake=0;
     const treeChunks:{mesh:THREE.Mesh;vel:THREE.Vector3;spin:THREE.Vector3;born:number;stage:number}[]=[];
     const bloodPools:{mesh:THREE.Mesh;born:number;radius:number}[]=[];
     const bloodDrops:{mesh:THREE.Mesh;born:number;source:"debris"|"trail"}[]=[];const bloodDropGeometry=new THREE.PlaneGeometry(.16,.16);
@@ -700,7 +787,46 @@ export default function Game() {
         attribute.needsUpdate=true;strand.mesh.geometry.computeVertexNormals();
       }
     };
-    const collect=(t:Target)=>{ t.alive=false; score+=Math.round(t.value*combo); combo=Math.min(99,combo+1); comboAt=performance.now(); if(t.kind==="person"){people++;growParasiteMass(people);}if(t.kind==="building"){destroyed++;shatter(t);t.mesh.scale.y=.08;t.mesh.position.y=-.5;}else{scene.remove(t.mesh);} if(t.kind==="person")radius=Math.min(6.8,radius+.038); };
+    const explodeCar=(car:Target)=>{
+      const position=car.mesh.position.clone();position.y=.65;
+      const sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean}[]=[];
+      const sparks:{mesh:THREE.Mesh;velocity:THREE.Vector3;age:number;life:number}[]=[];
+      // Layered additive fireballs give the blast a hot white core, orange shell and rolling smoke.
+      for(let i=0;i<22;i++){
+        const smoke=i>=12,material=new THREE.SpriteMaterial({
+          map:glowTexture,color:smoke?[0x2c2926,0x45403a,0x5b5145][i%3]:[0xfff1a0,0xff9b22,0xe8420c][i%3],
+          transparent:true,opacity:smoke?.62:.96,depthWrite:false,
+          blending:smoke?THREE.NormalBlending:THREE.AdditiveBlending,
+        });
+        const sprite=new THREE.Sprite(material),angle=rng()*Math.PI*2,distance=smoke?.35+rng()*1.2:rng()*.75;
+        sprite.position.copy(position).add(new THREE.Vector3(Math.cos(angle)*distance,.1+rng()*.8,Math.sin(angle)*distance));
+        const start=smoke?.7+rng()*.8:.65+rng()*.75,end=smoke?3.2+rng()*2:2.5+rng()*2;
+        sprite.scale.setScalar(start);scene.add(sprite);
+        sprites.push({mesh:sprite,velocity:new THREE.Vector3((rng()-.5)*(smoke?1.8:5),smoke?1.2+rng()*2.4:1.5+rng()*4,(rng()-.5)*(smoke?1.8:5)),age:0,life:smoke?1.5+rng()*1.5:.35+rng()*.45,start,end,smoke});
+      }
+      const sparkMaterial=new THREE.MeshBasicMaterial({color:0xffc14b});
+      for(let i=0;i<28;i++){
+        const spark=new THREE.Mesh(new THREE.BoxGeometry(.045,.045,.35+rng()*.65),sparkMaterial);
+        spark.position.copy(position).add(new THREE.Vector3((rng()-.5)*1.2,.3+rng(),(rng()-.5)*1.2));
+        spark.rotation.set(rng()*Math.PI,rng()*Math.PI,rng()*Math.PI);scene.add(spark);
+        const velocity=new THREE.Vector3(rng()-.5,.2+rng()*.8,rng()-.5).normalize().multiplyScalar(5+rng()*11);
+        sparks.push({mesh:spark,velocity,age:0,life:.45+rng()*.9});
+      }
+      // Recognisable body panels and wheels are thrown clear of the crushed vehicle.
+      for(let i=0;i<9;i++){
+        const wheel=i>=6,piece=new THREE.Mesh(wheel?cylGeo:boxGeo,mat(wheel?0x141516:[0x393d3e,0x8d3029,0xc0b84c][i%3]));
+        piece.position.copy(position).add(new THREE.Vector3((rng()-.5)*2,.25+rng(),(rng()-.5)*1.3));
+        piece.scale.set(wheel?.3:.35+rng()*.6,wheel?.18:.08+rng()*.22,wheel?.3:.3+rng()*.55);piece.castShadow=true;scene.add(piece);
+        debris.push({mesh:piece,vel:new THREE.Vector3((rng()-.5)*12,4+rng()*8,(rng()-.5)*12),spin:new THREE.Vector3((rng()-.5)*14,(rng()-.5)*14,(rng()-.5)*14),life:5+rng()*3});
+      }
+      const scorch=new THREE.Mesh(new THREE.CircleGeometry(2.2+rng(),24),new THREE.MeshBasicMaterial({color:0x17120e,transparent:true,opacity:.72,depthWrite:false}));
+      scorch.rotation.x=-Math.PI/2;scorch.position.set(position.x,.18,position.z);scene.add(scorch);
+      const ring=new THREE.Mesh(new THREE.RingGeometry(.7,1,32),new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
+      ring.rotation.x=-Math.PI/2;ring.position.set(position.x,.24,position.z);scene.add(ring);
+      const light=new THREE.PointLight(0xff721c,18,18,2);light.position.copy(position).setY(2);scene.add(light);
+      explosions.push({sprites,sparks,ring,light,age:0,life:3});explosionShake=Math.min(1.4,explosionShake+.85);
+    };
+    const collect=(t:Target)=>{ t.alive=false; score+=Math.round(t.value*combo); combo=Math.min(99,combo+1); comboAt=performance.now(); if(t.kind==="person"){people++;growParasiteMass(people);}if(t.kind==="car")explodeCar(t);if(t.kind==="building"){destroyed++;shatter(t);t.mesh.scale.y=.08;t.mesh.position.y=-.5;}else{scene.remove(t.mesh);} if(t.kind==="person")radius=Math.min(6.8,radius+.038); };
     const crushPerson=(t:Target,impactDirection:THREE.Vector3,impactForce:number)=>{
       if(!t.alive)return;t.alive=false;const position=t.mesh.position.clone();scene.remove(t.mesh);
       score+=Math.round(t.value*combo);combo=Math.min(99,combo+1);comboAt=performance.now();people++;growParasiteMass(people);radius=Math.min(6.8,radius+.038);
@@ -771,7 +897,7 @@ export default function Game() {
       rainMaterial.opacity=rainStrength*.62;
       roadMaterial.color.lerpColors(dryRoadColor,wetRoadColor,roadWetness*.12);
       roadMaterial.roughness=.98;roadMaterial.metalness=0;
-      wetPatchMaterial.opacity=.035+roadWetness*.32;wetPatchMaterial.roughness=.76-roadWetness*.13;
+      for(const wetPatchMaterial of wetPatchMaterials){wetPatchMaterial.opacity=.08+roadWetness*.46;wetPatchMaterial.roughness=.74-roadWetness*.18;}
       scene.fog!.density=.0045+rainStrength*.0018;sun.intensity=3.7-rainStrength*1.25;
       const rainAttribute=rainGeometry.getAttribute("position") as THREE.BufferAttribute;
       for(let i=0;i<rainCount;i++){
@@ -941,6 +1067,30 @@ export default function Game() {
         }
         if(d.life<0){const fragment=targets.find(target=>target.kind==="fragment"&&target.mesh===d.mesh);if(fragment)fragment.alive=false;scene.remove(d.mesh);debris.splice(i,1);}
       }
+      for(let i=explosions.length-1;i>=0;i--){
+        const explosion=explosions[i];explosion.age+=dt;
+        for(const particle of explosion.sprites){
+          particle.age+=dt;particle.mesh.position.addScaledVector(particle.velocity,dt);
+          particle.velocity.multiplyScalar(particle.smoke?Math.pow(.55,dt):Math.pow(.18,dt));
+          const progress=Math.min(1,particle.age/particle.life),size=THREE.MathUtils.lerp(particle.start,particle.end,particle.smoke?Math.sqrt(progress):Math.sin(progress*Math.PI)*.7+progress);
+          particle.mesh.scale.setScalar(size);
+          (particle.mesh.material as THREE.SpriteMaterial).opacity=(particle.smoke?.58:.95)*Math.pow(1-progress,particle.smoke?1.25:2.2);
+        }
+        for(const spark of explosion.sparks){
+          spark.age+=dt;spark.velocity.y-=10*dt;spark.mesh.position.addScaledVector(spark.velocity,dt);
+          spark.mesh.lookAt(spark.mesh.position.clone().add(spark.velocity));
+          (spark.mesh.material as THREE.MeshBasicMaterial).opacity=Math.max(0,1-spark.age/spark.life);
+        }
+        const ringProgress=Math.min(1,explosion.age/.65);explosion.ring.scale.setScalar(1+ringProgress*8);
+        (explosion.ring.material as THREE.MeshBasicMaterial).opacity=.85*Math.pow(1-ringProgress,2);
+        explosion.light.intensity=18*Math.pow(Math.max(0,1-explosion.age/.55),2);
+        if(explosion.age>=explosion.life){
+          for(const particle of explosion.sprites){scene.remove(particle.mesh);(particle.mesh.material as THREE.Material).dispose();}
+          for(const spark of explosion.sparks){scene.remove(spark.mesh);spark.mesh.geometry.dispose();}
+          scene.remove(explosion.ring,explosion.light);explosion.ring.geometry.dispose();(explosion.ring.material as THREE.Material).dispose();explosions.splice(i,1);
+        }
+      }
+      explosionShake=Math.max(0,explosionShake-dt*2.2);
       for(let i=treeChunks.length-1;i>=0;i--){
         const chunk=treeChunks[i],age=(now-chunk.born)/1000;chunk.vel.y-=12*dt;chunk.mesh.position.addScaledVector(chunk.vel,dt);
         chunk.mesh.rotation.x+=chunk.spin.x*dt;chunk.mesh.rotation.y+=chunk.spin.y*dt;chunk.mesh.rotation.z+=chunk.spin.z*dt;
@@ -973,6 +1123,7 @@ export default function Game() {
       const cameraDistance=54+radius*.8;
       const desired=new THREE.Vector3(player.position.x+Math.sin(cameraYaw)*cameraDistance,48+radius*1.5,player.position.z+Math.cos(cameraYaw)*cameraDistance);camera.position.lerp(desired,1-Math.pow(.001,dt));camera.lookAt(player.position.x,0,player.position.z);
       const pulse=1+Math.sin(now*.006)*.018;wormMass.scale.setScalar(pulse);
+      if(explosionShake>0){camera.position.x+=(rng()-.5)*explosionShake;camera.position.y+=(rng()-.5)*explosionShake*.55;camera.position.z+=(rng()-.5)*explosionShake;}
       renderer.setRenderTarget(renderTarget);renderer.render(scene,camera);renderer.setRenderTarget(null);renderer.render(postScene,postCamera);
     }
     requestAnimationFrame(animate);

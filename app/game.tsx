@@ -5,6 +5,20 @@ import * as THREE from "three";
 
 type Hud = { score: number; people: number; combo: number; size: number; time: number; destroyed: number };
 type Target = { mesh: THREE.Object3D; radius: number; baseRadius?: number; height?: number; value: number; kind: "person" | "fragment" | "car" | "tree" | "building"; minSize: number; alive: boolean };
+type Pedestrian = {
+  target: Target;
+  body: THREE.Group;
+  leftArm: THREE.Group;
+  rightArm: THREE.Group;
+  leftLeg: THREE.Group;
+  rightLeg: THREE.Group;
+  alert: THREE.Sprite;
+  state: "idle" | "walk" | "alert" | "run";
+  direction: THREE.Vector3;
+  stateUntil: number;
+  gait: number;
+  homeAxis: "x" | "z";
+};
 
 const palette = {
   asphalt: 0x31343a, concrete: 0x8a8b82, grass: 0x465a40, cream: 0xd4c7a4,
@@ -50,15 +64,15 @@ export default function Game() {
         float noise(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
         void main(){
           // Deliberately coarse, unstable sampling recreates a late-90s console framebuffer.
-          vec2 virtualResolution=vec2(426.0,240.0);
+          vec2 virtualResolution=vec2(568.0,320.0);
           vec2 snappedUv=(floor(vUv*virtualResolution)+.5)/virtualResolution;
           float row=floor(snappedUv.y*virtualResolution.y);
-          snappedUv.x+=(noise(vec2(row,floor(row/3.0)))-.5)/resolution.x*.7;
+          snappedUv.x+=(noise(vec2(row,floor(row/3.0)))-.5)/resolution.x*.38;
           vec2 px=1.0/virtualResolution;
           vec3 base;
-          base.r=texture2D(tDiffuse,snappedUv+vec2(px.x*.28,0.0)).r;
+          base.r=texture2D(tDiffuse,snappedUv+vec2(px.x*.17,0.0)).r;
           base.g=texture2D(tDiffuse,snappedUv).g;
-          base.b=texture2D(tDiffuse,snappedUv-vec2(px.x*.24,0.0)).b;
+          base.b=texture2D(tDiffuse,snappedUv-vec2(px.x*.15,0.0)).b;
           vec3 neighbors=(texture2D(tDiffuse,snappedUv+vec2(px.x,0.0)).rgb+
             texture2D(tDiffuse,snappedUv-vec2(px.x,0.0)).rgb+
             texture2D(tDiffuse,snappedUv+vec2(0.0,px.y)).rgb+
@@ -69,16 +83,16 @@ export default function Game() {
           float l=dot(c,vec3(.299,.587,.114));c=mix(vec3(l),c,1.08);
           c.b*=.94;c.g*=.98;
           float dither=mod(floor(gl_FragCoord.x/2.0)+floor(gl_FragCoord.y/2.0)*2.0,4.0)/4.0-.375;
-          c=floor(clamp(c+dither/22.0,0.0,1.0)*18.0+.5)/18.0;
-          c+=((noise(floor(gl_FragCoord.xy/2.0))-.5)/48.0);
-          c*=.965+.035*mod(floor(gl_FragCoord.y),2.0);
+          c=floor(clamp(c+dither/30.0,0.0,1.0)*22.0+.5)/22.0;
+          c+=((noise(floor(gl_FragCoord.xy/2.0))-.5)/68.0);
+          c*=.982+.018*mod(floor(gl_FragCoord.y),2.0);
           gl_FragColor=vec4(c,1.0);
         }`,
       depthTest:false,depthWrite:false,toneMapped:false,
     });
     postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),postMaterial));
 
-    scene.add(new THREE.HemisphereLight(0xd8e0d7, 0x3f4840, 2.8));
+    const hemi=new THREE.HemisphereLight(0xd8e0d7, 0x3f4840, 2.8);scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xffedcf, 3.7);
     sun.position.set(-50, 75, 35); sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024); sun.shadow.camera.left = sun.shadow.camera.bottom = -95; sun.shadow.camera.right = sun.shadow.camera.top = 95;
@@ -239,6 +253,10 @@ export default function Game() {
     }
     let raining=true,rainStrength=0,roadWetness=.42,weatherChangeAt=performance.now()+9000+weatherRandom()*9000;
     const dryRoadColor=new THREE.Color(0x87aeb0),wetRoadColor=new THREE.Color(0x496f74);
+    const morningSky=new THREE.Color(0x788b86),noonSky=new THREE.Color(0x91aaa5),eveningSky=new THREE.Color(0x6f625c);
+    const morningSun=new THREE.Color(0xffc78c),noonSun=new THREE.Color(0xfff2d2),eveningSun=new THREE.Color(0xff8b58);
+    const morningHemi=new THREE.Color(0xc5d2c9),noonHemi=new THREE.Color(0xe2ebe2),eveningHemi=new THREE.Color(0xb18f82);
+    const phaseSky=new THREE.Color(),phaseSun=new THREE.Color(),phaseHemi=new THREE.Color();
 
     // Covered pedestrian bridges based on the reference: oxidized blue steel,
     // pale corrugated roofing, long stepped approaches, and open side trusses.
@@ -403,7 +421,7 @@ export default function Game() {
         box(0,h*.99,0,w*.45,.48,d*.5,0x343936,g);
         box(-w*.2,h*1.06,-d*.12,w*.18,.55,d*.2,0x686a62,g);
         detail(new THREE.CylinderGeometry(.18,.18,1.2,8),0x323736,w*.22,h*1.09,d*.12);
-      }else{
+      }else if(style===2){
         box(-w*.08,h*.43,0,w*.84,h*.86,d,0xa8a394,g);
         // Stepped rounded corner is built from low-sided cylinders, echoing the
         // pale streamline-moderne building at the top of the reference.
@@ -433,6 +451,26 @@ export default function Game() {
           column(x,1.35,d*.74,2.2,trim,.14);
           box(x,1.28,d*.78,Math.max(.65,w/arcade*.52),1.65,.11,windowGlow,g);
         }
+      }else{
+        // Low industrial fire-station/warehouse: sawtooth roof, roller doors,
+        // exposed tanks and a narrow brick office tower.
+        box(0,h*.32,0,w,h*.64,d,0x76594a,g);
+        for(let x=-w*.42;x<=w*.42;x+=Math.max(2.5,w/4)){
+          box(x,1.35,d*.515,Math.max(1.7,w/5),2.7,.16,0x343b3b,g);
+          for(let y=.45;y<2.45;y+=.42)box(x,y,d*.62,Math.max(1.55,w/5-.16),.06,.05,0x8b8d80,g);
+        }
+        box(-w*.35,h*.62,0,w*.22,h*.58,d*.72,0x5b4037,g);
+        for(const y of [h*.45,h*.62,h*.79])box(-w*.35,y,d*.37,w*.13,.24,.12,windowGlow,g);
+        for(let x=-w*.35;x<=w*.35;x+=Math.max(2.8,w/3)){
+          const roof=detail(new THREE.ConeGeometry(Math.max(1.7,w*.15),2.1,4),0x344345,x,h*.72,0,0,Math.PI/4,0);
+          roof.scale.z=Math.max(.7,d/w);
+        }
+        box(0,h*.68,-d*.2,w*.72,.28,d*.4,0x3b4443,g);
+        const tank=detail(new THREE.CylinderGeometry(.65,.65,2.6,8),0x72776f,w*.35,h*.82,-d*.24);
+        tank.rotation.z=Math.PI/2;
+        detail(new THREE.CylinderGeometry(.13,.18,2.8,8),0x303635,w*.13,h*.91,-d*.22);
+        box(0,3.05,d*.65,w*.62,.72,.18,0xc29a48,g);
+        box(0,3.05,d*.76,w*.49,.1,.08,0x242b2a,g);
       }
     };
     let blockIndex=0;
@@ -459,7 +497,7 @@ export default function Game() {
         const areaFactor=Math.sqrt(parcel.w*parcel.d)/12,h=6+Math.floor((areaFactor+rng()*2.4))*3;
         const x=bx+parcel.x+(rng()-.5)*Math.max(0,parcel.w-w-3),z=bz+parcel.z+(rng()-.5)*Math.max(0,parcel.d-d-3);
         const g=new THREE.Group();g.position.set(x,0,z);scene.add(g);
-        addReferenceBuilding(g,w,h,d,(buildings.length+blockIndex)%3);
+        addReferenceBuilding(g,w,h,d,(buildings.length+blockIndex)%4);
         // Short path from the building entrance to the parcel pedestrian network.
         box(x,.21,z+d/2+Math.max(1,(parcel.d-d)*.2),2,.1,Math.max(2,parcel.d-d),palette.concrete);
         buildings.push(g);targets.push({mesh:g,radius:Math.max(w,d)*.55,height:h,value:Math.round(h*w*d*4),kind:"building",minSize:3+h*.055,alive:true});
@@ -468,6 +506,71 @@ export default function Game() {
         if(parcel.w*parcel.d>650)plannedTreePositions.push({x:bx+parcel.x-parcel.w*.32,z:bz+parcel.z+parcel.d*.34});
       }
     }
+
+    // Street furniture follows the road geometry rather than being scattered:
+    // lamps sit behind each curb and their arms always reach toward the lane.
+    const lampMetal=0x263638,lampGlow=new THREE.MeshStandardMaterial({color:0xffd77b,emissive:0xffa82d,emissiveIntensity:2.2,roughness:.35});
+    const addStreetLamp=(x:number,z:number,vertical:boolean,side:number,index:number)=>{
+      const g=new THREE.Group();g.position.set(x,0,z);scene.add(g);
+      box(0,2.9,0,.15,5.8,.15,lampMetal,g);
+      const toward=side<0?1:-1;
+      if(vertical){
+        box(toward*.55,5.72,0,1.1,.12,.12,lampMetal,g);
+        const head=new THREE.Mesh(boxGeo,lampGlow);head.position.set(toward*1.08,5.58,0);head.scale.set(.52,.13,.36);g.add(head);
+        if(index%4===0){const light=new THREE.PointLight(0xffc56a,1.1,9,2);light.position.set(toward*.95,5.25,0);g.add(light);}
+      }else{
+        box(0,5.72,toward*.55,.12,.12,1.1,lampMetal,g);
+        const head=new THREE.Mesh(boxGeo,lampGlow);head.position.set(0,5.58,toward*1.08);head.scale.set(.36,.13,.52);g.add(head);
+        if(index%4===0){const light=new THREE.PointLight(0xffc56a,1.1,9,2);light.position.set(0,5.25,toward*.95);g.add(light);}
+      }
+    };
+    let lampIndex=0;
+    for(const road of [-54,0,54])for(const side of [-1,1])for(let along=-72;along<=72;along+=18){
+      // Skip the centres of crossing roads so poles never stand in crosswalks.
+      if([-54,0,54].some(crossing=>Math.abs(along-crossing)<8))continue;
+      addStreetLamp(road+side*10.25,along,true,side,lampIndex++);
+      addStreetLamp(along,road+side*10.25,false,side,lampIndex++);
+    }
+
+    // Open iron fencing runs along lot edges in short sections, with deliberate
+    // gaps opposite paths and building entrances.
+    const addFenceRun=(x:number,z:number,length:number,vertical:boolean)=>{
+      const group=new THREE.Group();group.position.set(x,0,z);scene.add(group);
+      const segments=Math.max(2,Math.round(length/2.25)),step=length/segments;
+      for(let i=0;i<=segments;i++){
+        const p=-length/2+i*step;
+        box(vertical?0:p,1.05,vertical?p:0,.13,2.05,.13,0x263538,group);
+      }
+      for(const height of [.45,1.55])box(0,height,0,vertical ? .1 : length,.09,vertical ? length : .1,0x35484a,group);
+      for(let i=0;i<segments;i++){
+        const p=-length/2+(i+.5)*step,brace=box(vertical?0:p,1,vertical?p:0,vertical?.08:step*.96,.08,vertical?step*.96:.08,0x405456,group);
+        if(vertical)brace.rotation.x=(i%2?1:-1)*.52;else brace.rotation.z=(i%2?1:-1)*.52;
+      }
+    };
+    for(const bx of blocks)for(const bz of blocks){
+      for(const offset of [-9.8,9.8]){
+        addFenceRun(bx+offset,bz-15.3,8.4,false);addFenceRun(bx+offset,bz+15.3,8.4,false);
+        addFenceRun(bx-15.3,bz+offset,8.4,true);addFenceRun(bx+15.3,bz+offset,8.4,true);
+      }
+    }
+
+    const billboardColors=[["#d7b646","#672926"],["#80a9a3","#192e38"],["#c9c5a4","#3d5039"],["#bb5a3c","#e3c474"]];
+    const addBillboard=(x:number,z:number,rotation:number,label:string,index:number)=>{
+      const canvas=document.createElement("canvas");canvas.width=256;canvas.height=112;const context=canvas.getContext("2d")!;
+      const colors=billboardColors[index%billboardColors.length];context.fillStyle=colors[0];context.fillRect(0,0,256,112);
+      for(let i=0;i<180;i++){context.fillStyle=`rgba(20,30,27,${.03+rng()*.16})`;context.fillRect(rng()*256,rng()*112,1+rng()*8,1+rng()*3);}
+      context.strokeStyle=colors[1];context.lineWidth=8;context.strokeRect(5,5,246,102);
+      context.fillStyle=colors[1];context.font="900 32px Impact, sans-serif";context.textAlign="center";context.fillText(label,128,55);
+      context.font="bold 13px Arial";context.fillText("CITY SERVICE • OPEN ALL NIGHT",128,80);
+      const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;texture.magFilter=THREE.NearestFilter;
+      const group=new THREE.Group();group.position.set(x,0,z);group.rotation.y=rotation;scene.add(group);
+      for(const px of [-2.6,2.6])box(px,2.1,0,.18,4.2,.18,0x4a5350,group);
+      const board=new THREE.Mesh(new THREE.PlaneGeometry(6.8,3),new THREE.MeshStandardMaterial({map:texture,roughness:.9,side:THREE.DoubleSide}));
+      board.position.set(0,4.2,0);board.castShadow=true;group.add(board);
+      box(0,4.2,-.1,7,3.2,.14,0x333b39,group);
+    };
+    addBillboard(-42,-11,0,"NIGHT DRIVE",0);addBillboard(41,11,Math.PI,"MEAT MARKET",1);
+    addBillboard(-11,39,Math.PI/2,"STAY ALERT",2);addBillboard(11,-41,-Math.PI/2,"FIRE SAFE",3);
 
     const addCar = (x:number,z:number,c:number,rot=0) => {
       const g=new THREE.Group(); g.position.set(x,.7,z); g.rotation.y=rot; scene.add(g);
@@ -484,6 +587,19 @@ export default function Game() {
     glowGradient.addColorStop(1,"rgba(255,255,255,0)");
     glowContext.fillStyle=glowGradient; glowContext.fillRect(0,0,128,128);
     const glowTexture=new THREE.CanvasTexture(glowCanvas);
+    // Explosion resources are allocated and shader-warmed during loading. Creating
+    // dozens of geometries and compiling transparent shaders on first impact caused
+    // the former multi-second hitch.
+    const explosionFireBases=[0xfff1a0,0xff9b22,0xe8420c].map(color=>new THREE.SpriteMaterial({map:glowTexture,color,transparent:true,opacity:.96,depthWrite:false,blending:THREE.AdditiveBlending}));
+    const explosionSmokeBases=[0x2c2926,0x45403a,0x5b5145].map(color=>new THREE.SpriteMaterial({map:glowTexture,color,transparent:true,opacity:.62,depthWrite:false,blending:THREE.NormalBlending}));
+    const explosionSparkGeometry=new THREE.BoxGeometry(.045,.045,.65);
+    const explosionRingGeometry=new THREE.RingGeometry(.7,1,32);
+    const explosionScorchGeometry=new THREE.CircleGeometry(2.7,24);
+    const explosionWarmup=new THREE.Group();explosionWarmup.position.set(0,-1000,0);
+    for(const material of [...explosionFireBases,...explosionSmokeBases])explosionWarmup.add(new THREE.Sprite(material));
+    explosionWarmup.add(new THREE.Mesh(explosionSparkGeometry,new THREE.MeshBasicMaterial({color:0xffc14b})));
+    explosionWarmup.add(new THREE.Mesh(explosionRingGeometry,new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,blending:THREE.AdditiveBlending})));
+    scene.add(explosionWarmup);
     const policeLights: {
       red: THREE.MeshStandardMaterial; blue: THREE.MeshStandardMaterial;
       redGlow: THREE.SpriteMaterial; blueGlow: THREE.SpriteMaterial;
@@ -622,9 +738,10 @@ export default function Game() {
     const addTree=(x:number,z:number)=>{
       const g=new THREE.Group();g.position.set(x,0,z);scene.add(g);
       const totalHeight=3.8+rng()*4.4,trunkHeight=totalHeight*(.48+rng()*.12),trunkWidth=.34+rng()*.34;
+      const treeForm=Math.floor(rng()*3); // broadleaf, conifer, or tall sparse crown
       const trunkColor=[0x3c3022,0x493627,0x58412b][Math.floor(rng()*3)];
       const trunk=new THREE.Mesh(cylGeo,mat(trunkColor));trunk.position.y=trunkHeight/2;trunk.scale.set(trunkWidth,trunkHeight,trunkWidth);trunk.castShadow=true;g.add(trunk);
-      const branchCount=2+Math.floor(rng()*4);
+      const branchCount=treeForm===1?0:treeForm===2?5+Math.floor(rng()*3):2+Math.floor(rng()*4);
       for(let i=0;i<branchCount;i++){
         const start=new THREE.Vector3(0,trunkHeight*(.62+rng()*.3),0),a=rng()*Math.PI*2;
         const end=new THREE.Vector3(Math.cos(a)*(1+rng()*1.3),start.y+.4+rng()*1.15,Math.sin(a)*(1+rng()*1.3));
@@ -633,19 +750,29 @@ export default function Game() {
         branch.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),direction.clone().normalize());branch.castShadow=true;g.add(branch);
       }
       const foliageMaterial=foliageMaterials[Math.floor(rng()*foliageMaterials.length)];
-      const sparse=rng()<.28,clusterCount=sparse?3+Math.floor(rng()*3):6+Math.floor(rng()*6);
       let crownRadius=1.2;
-      for(let i=0;i<clusterCount;i++){
-        const a=rng()*Math.PI*2,spread=(sparse?.65:1.05)+rng()*(sparse?.8:1.35);
-        const crown=new THREE.Group();crown.position.set(Math.cos(a)*spread,trunkHeight+(rng()-.18)*totalHeight*.24,Math.sin(a)*spread);
-        const size=(sparse?.65:1)+(rng()*(sparse?.75:1.2));
-        for(let planeIndex=0;planeIndex<3;planeIndex++){
-          const plane=new THREE.Mesh(foliagePlane,foliageMaterial);plane.scale.set(size*(1.65+rng()*.45),size*(1.65+rng()*.65),1);
-          if(planeIndex<2)plane.rotation.y=planeIndex*Math.PI/2+rng()*.3;else plane.rotation.x=Math.PI/2;
-          plane.castShadow=true;plane.receiveShadow=true;crown.add(plane);
+      if(treeForm===1){
+        // Tiered low-poly conifer, intentionally angular at PS1 distance.
+        const coniferMaterial=mat([0x263f32,0x344d37,0x465a3d][Math.floor(rng()*3)]);
+        for(let tier=0;tier<4;tier++){
+          const cone=new THREE.Mesh(new THREE.ConeGeometry(1.65-tier*.18,2.5,7),coniferMaterial);
+          cone.position.y=trunkHeight*.58+tier*1.05;cone.castShadow=true;g.add(cone);
         }
-        crown.rotation.y=rng()*Math.PI;g.add(crown);
-        crownRadius=Math.max(crownRadius,spread+size);
+        crownRadius=1.8;
+      }else{
+        const sparse=treeForm===2||rng()<.2,clusterCount=treeForm===2?4+Math.floor(rng()*3):sparse?3+Math.floor(rng()*3):7+Math.floor(rng()*6);
+        for(let i=0;i<clusterCount;i++){
+          const a=rng()*Math.PI*2,spread=(treeForm===2?1.35:sparse?.65:1.05)+rng()*(treeForm===2?1.3:sparse?.8:1.35);
+          const crown=new THREE.Group();crown.position.set(Math.cos(a)*spread,trunkHeight+(treeForm===2?.12:rng()-.18)*totalHeight*.24,Math.sin(a)*spread);
+          const size=(treeForm===2?.55:sparse?.65:1)+(rng()*(treeForm===2?.55:sparse?.75:1.2));
+          for(let planeIndex=0;planeIndex<3;planeIndex++){
+            const plane=new THREE.Mesh(foliagePlane,foliageMaterial);plane.scale.set(size*(1.65+rng()*.45),size*(1.65+rng()*.65),1);
+            if(planeIndex<2)plane.rotation.y=planeIndex*Math.PI/2+rng()*.3;else plane.rotation.x=Math.PI/2;
+            plane.castShadow=true;plane.receiveShadow=true;crown.add(plane);
+          }
+          crown.rotation.y=rng()*Math.PI;g.add(crown);
+          crownRadius=Math.max(crownRadius,spread+size);
+        }
       }
       targets.push({mesh:g,radius:crownRadius,baseRadius:trunkWidth,height:totalHeight,value:1800,kind:"tree",minSize:1.25,alive:true});
     };
@@ -658,8 +785,38 @@ export default function Game() {
       if(clearOfBuilding)addTree(x,z);
     }
 
-    const addPerson=(x:number,z:number)=>{ const g=new THREE.Group(); g.position.set(x,.75,z); scene.add(g); box(0,0,0,.45,.9,.35,[0x7b3131,0x315b77,0xd3b346][Math.floor(rng()*3)],g); const head=new THREE.Mesh(sphereGeo,mat(0xc49372)); head.position.y=.72; head.scale.set(.3,.3,.3); g.add(head); targets.push({mesh:g,radius:.55,value:900,kind:"person",minSize:.8,alive:true}); };
-    for(let i=0;i<75;i++){ const vertical=rng()>.5, main=roadVals[Math.floor(rng()*3)], along=-78+rng()*156, side=(rng()>.5?1:-1)*(9.6+rng()*2); addPerson(vertical?main+side:along,vertical?along:main+side); }
+    const pedestrians:Pedestrian[]=[];
+    const alertCanvas=document.createElement("canvas");alertCanvas.width=alertCanvas.height=64;
+    const alertContext=alertCanvas.getContext("2d")!;
+    alertContext.font="900 54px Arial";alertContext.textAlign="center";alertContext.textBaseline="middle";
+    alertContext.lineWidth=10;alertContext.strokeStyle="rgba(22,16,10,.75)";alertContext.strokeText("!",34,34);
+    alertContext.fillStyle="#fff8d8";alertContext.fillText("!",32,31);
+    const alertTexture=new THREE.CanvasTexture(alertCanvas);alertTexture.colorSpace=THREE.SRGBColorSpace;
+    const alertMaterial=new THREE.SpriteMaterial({map:alertTexture,transparent:true,depthTest:true,depthWrite:false});
+    const addPerson=(x:number,z:number,homeAxis:"x"|"z")=>{
+      const g=new THREE.Group();g.position.set(x,.12,z);scene.add(g);
+      const body=new THREE.Group();body.position.y=.05;g.add(body);
+      const clothing=[0x342b28,0x303b3b,0x4c342d,0x28323e][Math.floor(rng()*4)];
+      const skin=[0x9b684d,0xb77d5d,0x704735][Math.floor(rng()*3)];
+      box(0,1.15,0,.32,.62,.22,clothing,body);
+      const head=new THREE.Mesh(sphereGeo,mat(skin));head.position.y=2;head.scale.set(.28,.32,.27);head.castShadow=true;body.add(head);
+      box(0,2.24,-.02,.3,.09,.28,0x241c19,body);
+      const makeLimb=(px:number,py:number,color:number,length:number)=>{
+        const pivot=new THREE.Group();pivot.position.set(px,py,0);body.add(pivot);
+        const limb=box(0,-length*.5,0,.115,length*.5,.12,color,pivot);limb.castShadow=true;return pivot;
+      };
+      const leftArm=makeLimb(-.43,1.6,clothing,.82),rightArm=makeLimb(.43,1.6,clothing,.82);
+      const leftLeg=makeLimb(-.18,.58,0x252523,.9),rightLeg=makeLimb(.18,.58,0x252523,.9);
+      box(0,-.92,.08,.15,.08,.28,0x171717,leftLeg);box(0,-.92,.08,.15,.08,.28,0x171717,rightLeg);
+      const alert=new THREE.Sprite(alertMaterial);alert.position.set(0,3.05,0);alert.scale.set(1.05,1.05,1);alert.visible=false;g.add(alert);
+      const target:Target={mesh:g,radius:.55,value:900,kind:"person",minSize:.8,alive:true};targets.push(target);
+      const sign=rng()>.5?1:-1,direction=homeAxis==="z"?new THREE.Vector3(0,0,sign):new THREE.Vector3(sign,0,0);
+      pedestrians.push({target,body,leftArm,rightArm,leftLeg,rightLeg,alert,state:rng()>.28?"walk":"idle",direction,stateUntil:performance.now()+800+rng()*2500,gait:rng()*Math.PI*2,homeAxis});
+    };
+    for(let i=0;i<75;i++){
+      const vertical=rng()>.5,main=roadVals[Math.floor(rng()*3)],along=-78+rng()*156,side=(rng()>.5?1:-1)*(9.6+rng()*2);
+      addPerson(vertical?main+side:along,vertical?along:main+side,vertical?"z":"x");
+    }
 
     const player=new THREE.Group(); scene.add(player);
     const wormMass=new THREE.Group(); player.add(wormMass);
@@ -793,20 +950,17 @@ export default function Game() {
       const sparks:{mesh:THREE.Mesh;velocity:THREE.Vector3;age:number;life:number}[]=[];
       // Layered additive fireballs give the blast a hot white core, orange shell and rolling smoke.
       for(let i=0;i<22;i++){
-        const smoke=i>=12,material=new THREE.SpriteMaterial({
-          map:glowTexture,color:smoke?[0x2c2926,0x45403a,0x5b5145][i%3]:[0xfff1a0,0xff9b22,0xe8420c][i%3],
-          transparent:true,opacity:smoke?.62:.96,depthWrite:false,
-          blending:smoke?THREE.NormalBlending:THREE.AdditiveBlending,
-        });
+        const smoke=i>=12,material=(smoke?explosionSmokeBases:explosionFireBases)[i%3].clone();
         const sprite=new THREE.Sprite(material),angle=rng()*Math.PI*2,distance=smoke?.35+rng()*1.2:rng()*.75;
         sprite.position.copy(position).add(new THREE.Vector3(Math.cos(angle)*distance,.1+rng()*.8,Math.sin(angle)*distance));
         const start=smoke?.7+rng()*.8:.65+rng()*.75,end=smoke?3.2+rng()*2:2.5+rng()*2;
         sprite.scale.setScalar(start);scene.add(sprite);
         sprites.push({mesh:sprite,velocity:new THREE.Vector3((rng()-.5)*(smoke?1.8:5),smoke?1.2+rng()*2.4:1.5+rng()*4,(rng()-.5)*(smoke?1.8:5)),age:0,life:smoke?1.5+rng()*1.5:.35+rng()*.45,start,end,smoke});
       }
-      const sparkMaterial=new THREE.MeshBasicMaterial({color:0xffc14b});
+      const sparkMaterial=new THREE.MeshBasicMaterial({color:0xffc14b,transparent:true});
       for(let i=0;i<28;i++){
-        const spark=new THREE.Mesh(new THREE.BoxGeometry(.045,.045,.35+rng()*.65),sparkMaterial);
+        const spark=new THREE.Mesh(explosionSparkGeometry,sparkMaterial);
+        spark.scale.z=.55+rng();
         spark.position.copy(position).add(new THREE.Vector3((rng()-.5)*1.2,.3+rng(),(rng()-.5)*1.2));
         spark.rotation.set(rng()*Math.PI,rng()*Math.PI,rng()*Math.PI);scene.add(spark);
         const velocity=new THREE.Vector3(rng()-.5,.2+rng()*.8,rng()-.5).normalize().multiplyScalar(5+rng()*11);
@@ -819,9 +973,10 @@ export default function Game() {
         piece.scale.set(wheel?.3:.35+rng()*.6,wheel?.18:.08+rng()*.22,wheel?.3:.3+rng()*.55);piece.castShadow=true;scene.add(piece);
         debris.push({mesh:piece,vel:new THREE.Vector3((rng()-.5)*12,4+rng()*8,(rng()-.5)*12),spin:new THREE.Vector3((rng()-.5)*14,(rng()-.5)*14,(rng()-.5)*14),life:5+rng()*3});
       }
-      const scorch=new THREE.Mesh(new THREE.CircleGeometry(2.2+rng(),24),new THREE.MeshBasicMaterial({color:0x17120e,transparent:true,opacity:.72,depthWrite:false}));
+      const scorch=new THREE.Mesh(explosionScorchGeometry,new THREE.MeshBasicMaterial({color:0x17120e,transparent:true,opacity:.72,depthWrite:false}));
+      scorch.scale.setScalar(.82+rng()*.38);
       scorch.rotation.x=-Math.PI/2;scorch.position.set(position.x,.18,position.z);scene.add(scorch);
-      const ring=new THREE.Mesh(new THREE.RingGeometry(.7,1,32),new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
+      const ring=new THREE.Mesh(explosionRingGeometry,new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
       ring.rotation.x=-Math.PI/2;ring.position.set(position.x,.24,position.z);scene.add(ring);
       const light=new THREE.PointLight(0xff721c,18,18,2);light.position.copy(position).setY(2);scene.add(light);
       explosions.push({sprites,sparks,ring,light,age:0,life:3});explosionShake=Math.min(1.4,explosionShake+.85);
@@ -885,8 +1040,26 @@ export default function Game() {
     };
 
     const restart=()=>{ location.reload(); };
+    renderer.compile(scene,camera);
+    scene.remove(explosionWarmup);
     gameRef.current={start:()=>{active=true;finished=false;startAt=performance.now();setStarted(true);},restart};
     function animate(now:number){ requestAnimationFrame(animate); const dt=Math.min(.035,(now-last)/1000);last=now; const elapsed=active?(now-startAt)/1000:0; const remain=Math.max(0,90-elapsed);
+      // One match travels from cool early morning through bright noon to a
+      // long amber evening; weather then modulates that daylight instead of
+      // replacing it.
+      const dayProgress=THREE.MathUtils.clamp(elapsed/90,0,1),phaseT=dayProgress<.5?dayProgress*2:(dayProgress-.5)*2;
+      if(dayProgress<.5){
+        phaseSky.lerpColors(morningSky,noonSky,phaseT);phaseSun.lerpColors(morningSun,noonSun,phaseT);phaseHemi.lerpColors(morningHemi,noonHemi,phaseT);
+      }else{
+        phaseSky.lerpColors(noonSky,eveningSky,phaseT);phaseSun.lerpColors(noonSun,eveningSun,phaseT);phaseHemi.lerpColors(noonHemi,eveningHemi,phaseT);
+      }
+      (scene.background as THREE.Color).copy(phaseSky).multiplyScalar(1-rainStrength*.12);
+      scene.fog!.color.copy(phaseSky).multiplyScalar(.94-rainStrength*.08);
+      sun.color.copy(phaseSun);hemi.color.copy(phaseHemi);
+      hemi.groundColor.set(dayProgress>.62?0x493b38:0x3f4840);
+      const daylight=dayProgress<.5?THREE.MathUtils.lerp(2.75,3.9,phaseT):THREE.MathUtils.lerp(3.9,2.45,phaseT);
+      hemi.intensity=(dayProgress<.5?THREE.MathUtils.lerp(2.25,3.05,phaseT):THREE.MathUtils.lerp(3.05,1.9,phaseT))*(1-rainStrength*.16);
+      sun.position.x=THREE.MathUtils.lerp(-62,48,dayProgress);sun.position.z=THREE.MathUtils.lerp(26,-38,dayProgress);
       if(now>=weatherChangeAt){
         raining=!raining;
         // Dry spells vary more than storms, so weather never settles into a fixed rhythm.
@@ -898,7 +1071,7 @@ export default function Game() {
       roadMaterial.color.lerpColors(dryRoadColor,wetRoadColor,roadWetness*.12);
       roadMaterial.roughness=.98;roadMaterial.metalness=0;
       for(const wetPatchMaterial of wetPatchMaterials){wetPatchMaterial.opacity=.08+roadWetness*.46;wetPatchMaterial.roughness=.74-roadWetness*.18;}
-      scene.fog!.density=.0045+rainStrength*.0018;sun.intensity=3.7-rainStrength*1.25;
+      scene.fog!.density=.0045+rainStrength*.0018;sun.intensity=daylight*(1-rainStrength*.34);
       const rainAttribute=rainGeometry.getAttribute("position") as THREE.BufferAttribute;
       for(let i=0;i<rainCount;i++){
         const n=i*2;let x=rainAttribute.getX(n),y=rainAttribute.getY(n),z=rainAttribute.getZ(n);
@@ -922,6 +1095,55 @@ export default function Game() {
       for(const strand of parasiteStrands){
         strand.mesh.rotation.x=Math.sin(now*.0017+strand.phase)*strand.amplitude;
         strand.mesh.rotation.z=Math.cos(now*.0021+strand.phase*1.7)*strand.amplitude;
+      }
+      // Pedestrians stroll, pause, notice the approaching mass, then flee in
+      // the opposite direction. The warning only remains during the reaction beat.
+      for(const pedestrian of pedestrians){
+        if(!pedestrian.target.alive)continue;
+        const person=pedestrian.target.mesh;
+        const away=person.position.clone().sub(player.position);away.y=0;
+        const distance=away.length();
+        if(active&&pedestrian.state!=="run"&&pedestrian.state!=="alert"&&distance<12+radius*1.35){
+          pedestrian.state="alert";pedestrian.stateUntil=now+620;pedestrian.alert.visible=true;
+        }
+        if(pedestrian.state==="alert"&&now>=pedestrian.stateUntil){
+          pedestrian.state="run";pedestrian.alert.visible=false;
+          pedestrian.direction.copy(away.lengthSq()>.001?away.normalize():new THREE.Vector3(1,0,0));
+        }else if((pedestrian.state==="idle"||pedestrian.state==="walk")&&now>=pedestrian.stateUntil){
+          if(pedestrian.state==="idle"){
+            pedestrian.state="walk";pedestrian.direction.multiplyScalar(rng()>.18?1:-1);pedestrian.stateUntil=now+1800+rng()*3600;
+          }else{
+            pedestrian.state="idle";pedestrian.stateUntil=now+650+rng()*2200;
+          }
+        }
+        let speed=0,amplitude=0;
+        if(pedestrian.state==="walk"){speed=1.05;amplitude=.48;}
+        if(pedestrian.state==="run"){
+          if(distance>0.01)pedestrian.direction.lerp(away.normalize(),1-Math.pow(.035,dt)).normalize();
+          speed=5.5;amplitude=.92;
+        }
+        if(speed){
+          person.position.addScaledVector(pedestrian.direction,speed*dt);
+          pedestrian.gait+=dt*(pedestrian.state==="run"?13:6.2);
+          person.rotation.y=Math.atan2(pedestrian.direction.x,pedestrian.direction.z);
+        }
+        // Turn strolling pedestrians around at the map edge; panicked people
+        // are clamped but continue trying to get away from the danger.
+        if(Math.abs(person.position.x)>80){person.position.x=THREE.MathUtils.clamp(person.position.x,-80,80);if(pedestrian.state!=="run")pedestrian.direction.x*=-1;}
+        if(Math.abs(person.position.z)>80){person.position.z=THREE.MathUtils.clamp(person.position.z,-80,80);if(pedestrian.state!=="run")pedestrian.direction.z*=-1;}
+        const stride=Math.sin(pedestrian.gait)*amplitude;
+        pedestrian.leftLeg.rotation.x=stride;pedestrian.rightLeg.rotation.x=-stride;
+        pedestrian.leftArm.rotation.x=-stride*.82;pedestrian.rightArm.rotation.x=stride*.82;
+        pedestrian.body.position.y=.05+(speed?Math.abs(Math.sin(pedestrian.gait*2))*(pedestrian.state==="run"?.11:.035):0);
+        pedestrian.body.rotation.x=pedestrian.state==="run"?.16:0;
+        if(pedestrian.state==="alert"){
+          const shakeX=Math.sin(now*.105+pedestrian.gait)*.18,shakeY=Math.cos(now*.137+pedestrian.gait)*.09;
+          pedestrian.alert.position.set(shakeX,3.05+shakeY,0);
+          pedestrian.alert.material.rotation=Math.sin(now*.13)*.13;
+          pedestrian.body.rotation.z=Math.sin(now*.045+pedestrian.gait)*.035;
+        }else{
+          pedestrian.alert.visible=false;pedestrian.body.rotation.z=0;
+        }
       }
       // Free parasites search independently. Nearby living prey triggers a sudden snake-like strike.
       for(let ti=0;ti<huntingTentacles.length;ti++){
@@ -1086,8 +1308,9 @@ export default function Game() {
         explosion.light.intensity=18*Math.pow(Math.max(0,1-explosion.age/.55),2);
         if(explosion.age>=explosion.life){
           for(const particle of explosion.sprites){scene.remove(particle.mesh);(particle.mesh.material as THREE.Material).dispose();}
-          for(const spark of explosion.sparks){scene.remove(spark.mesh);spark.mesh.geometry.dispose();}
-          scene.remove(explosion.ring,explosion.light);explosion.ring.geometry.dispose();(explosion.ring.material as THREE.Material).dispose();explosions.splice(i,1);
+          for(const spark of explosion.sparks)scene.remove(spark.mesh);
+          if(explosion.sparks[0])(explosion.sparks[0].mesh.material as THREE.Material).dispose();
+          scene.remove(explosion.ring,explosion.light);(explosion.ring.material as THREE.Material).dispose();explosions.splice(i,1);
         }
       }
       explosionShake=Math.max(0,explosionShake-dt*2.2);

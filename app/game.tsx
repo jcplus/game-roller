@@ -184,28 +184,81 @@ export default function Game() {
     meatTexture.colorSpace=THREE.SRGBColorSpace;
     const ground=new THREE.Mesh(boxGeo,grassMaterial);ground.position.set(0,-.55,0);ground.scale.set(170,1,170);ground.receiveShadow=true;scene.add(ground);
     const roadGroup = new THREE.Group(); scene.add(roadGroup);
-    [-54, 0, 54].forEach(v => {
-      surfaceBox(v, .02, 0, 18, .12, 170, roadMaterial, roadGroup);
-      surfaceBox(0, .025, v, 170, .12, 18, roadMaterial, roadGroup);
-      // Continuous double ochre centre line with the narrow dark gap seen in the reference.
-      surfaceBox(v-1.05,.105,0,.23,.035,170,yellowRoadMaterial,roadGroup);
-      surfaceBox(v+1.05,.105,0,.23,.035,170,yellowRoadMaterial,roadGroup);
-      surfaceBox(0,.11,v-1.05,170,.035,.23,yellowRoadMaterial,roadGroup);
-      surfaceBox(0,.11,v+1.05,170,.035,.23,yellowRoadMaterial,roadGroup);
-      for (let p = -80; p <= 80; p += 9) {
-        surfaceBox(v-6.1,.11,p,.18,.035,4.2,whiteRoadMaterial,roadGroup);
-        surfaceBox(v+6.1,.11,p,.18,.035,4.2,whiteRoadMaterial,roadGroup);
-        surfaceBox(p,.115,v-6.1,4.2,.035,.18,whiteRoadMaterial,roadGroup);
-        surfaceBox(p,.115,v+6.1,4.2,.035,.18,whiteRoadMaterial,roadGroup);
+    // The network deliberately mixes a narrow two-lane street, a four-lane arterial
+    // and an asymmetric avenue. It keeps the readable grid while avoiding nine
+    // identical corridors.
+    const verticalRoads=[
+      {at:-54,width:14,laneOffsets:[-4.35,4.35]},
+      {at:0,width:22,laneOffsets:[-4.1,-7.8,4.1,7.8]},
+      {at:54,width:18,laneOffsets:[-6.1,6.1]},
+    ];
+    const horizontalRoads=[
+      {at:-54,width:22,laneOffsets:[-4.1,-7.8,4.1,7.8]},
+      {at:0,width:14,laneOffsets:[-4.35,4.35]},
+      {at:54,width:18,laneOffsets:[-6.1,6.1]},
+    ];
+    const outsideIntersections=(position:number,crossings:{at:number;width:number}[])=>
+      crossings.every(crossing=>Math.abs(position-crossing.at)>crossing.width/2+3.2);
+    for(const road of verticalRoads){
+      surfaceBox(road.at,.02,0,road.width,.12,170,roadMaterial,roadGroup);
+      // Markings terminate before every junction; nothing is painted through the
+      // crossing box. This also leaves a clean vehicle turning area.
+      for(let p=-82;p<=82;p+=2){
+        if(!outsideIntersections(p,horizontalRoads))continue;
+        surfaceBox(road.at-1.05,.105,p,.23,.035,2.05,yellowRoadMaterial,roadGroup);
+        surfaceBox(road.at+1.05,.105,p,.23,.035,2.05,yellowRoadMaterial,roadGroup);
       }
-    });
-    // Crosswalks and lane arrows: small geometry produces the dense road language of the reference.
-    [-54, 0, 54].forEach(x => [-54, 0, 54].forEach(z => {
+      for(let p=-78;p<=78;p+=9){
+        if(!outsideIntersections(p,horizontalRoads))continue;
+        for(const offset of road.laneOffsets)
+          surfaceBox(road.at+offset,.11,p,.18,.035,4.2,whiteRoadMaterial,roadGroup);
+      }
+    }
+    for(const road of horizontalRoads){
+      surfaceBox(0,.025,road.at,170,.12,road.width,roadMaterial,roadGroup);
+      for(let p=-82;p<=82;p+=2){
+        if(!outsideIntersections(p,verticalRoads))continue;
+        surfaceBox(p,.11,road.at-1.05,2.05,.035,.23,yellowRoadMaterial,roadGroup);
+        surfaceBox(p,.11,road.at+1.05,2.05,.035,.23,yellowRoadMaterial,roadGroup);
+      }
+      for(let p=-78;p<=78;p+=9){
+        if(!outsideIntersections(p,verticalRoads))continue;
+        for(const offset of road.laneOffsets)
+          surfaceBox(p,.115,road.at+offset,4.2,.035,.18,whiteRoadMaterial,roadGroup);
+      }
+    }
+    // Crosswalk setbacks follow the width of each approach rather than forming a
+    // repeated checkerboard.
+    verticalRoads.forEach(v => horizontalRoads.forEach(h => {
+      if(v.at===0&&h.at===0)return;
+      const xStep=Math.max(1.25,v.width/13),zStep=Math.max(1.25,h.width/13);
       for (let i=-4; i<=4; i++) {
-        surfaceBox(x + i*1.35,.12,z-10.2,.75,.035,4.2,whiteRoadMaterial,roadGroup);
-        surfaceBox(x-10.2,.12,z + i*1.35,4.2,.035,.75,whiteRoadMaterial,roadGroup);
+        // Zebra crossings occupy all four approaches and remain perpendicular
+        // to traffic, as in the reference.
+        surfaceBox(v.at+i*xStep,.12,h.at-h.width/2-1.3,.75,.035,3.5,whiteRoadMaterial,roadGroup);
+        surfaceBox(v.at+i*xStep,.12,h.at+h.width/2+1.3,.75,.035,3.5,whiteRoadMaterial,roadGroup);
+        surfaceBox(v.at-v.width/2-1.3,.12,h.at+i*zStep,3.5,.035,.75,whiteRoadMaterial,roadGroup);
+        surfaceBox(v.at+v.width/2+1.3,.12,h.at+i*zStep,3.5,.035,.75,whiteRoadMaterial,roadGroup);
       }
     }));
+    // A landscaped roundabout makes the civic centre a distinct navigational
+    // landmark and introduces curved road language into the otherwise rectilinear city.
+    const roundaboutRoad=new THREE.Mesh(new THREE.CylinderGeometry(10.6,10.6,.14,40),roadMaterial);
+    roundaboutRoad.position.set(0,.105,0);roundaboutRoad.receiveShadow=true;roadGroup.add(roundaboutRoad);
+    const roundaboutIsland=new THREE.Mesh(new THREE.CylinderGeometry(4.2,4.55,.42,24),grassMaterial);
+    roundaboutIsland.position.set(0,.34,0);roundaboutIsland.receiveShadow=true;roadGroup.add(roundaboutIsland);
+    const roundaboutCurb=new THREE.Mesh(new THREE.TorusGeometry(4.55,.23,6,40),mat(0xe6e1cd));
+    roundaboutCurb.rotation.x=Math.PI/2;roundaboutCurb.position.y=.57;roadGroup.add(roundaboutCurb);
+    const roundaboutLine=new THREE.Mesh(new THREE.TorusGeometry(7.25,.11,5,48),yellowRoadMaterial);
+    roundaboutLine.rotation.x=Math.PI/2;roundaboutLine.position.y=.2;roadGroup.add(roundaboutLine);
+    // The roundabout has one controlled crossing on each approach, outside the
+    // circulating lane instead of stripes cutting across the island.
+    for(let i=-4;i<=4;i++){
+      surfaceBox(i*1.45,.215,-12.4,.78,.035,3.2,whiteRoadMaterial,roadGroup);
+      surfaceBox(i*1.45,.215,12.4,.78,.035,3.2,whiteRoadMaterial,roadGroup);
+      surfaceBox(-12.4,.215,i*1.45,3.2,.035,.78,whiteRoadMaterial,roadGroup);
+      surfaceBox(12.4,.215,i*1.45,3.2,.035,.78,whiteRoadMaterial,roadGroup);
+    }
 
     // Random rain fronts: bright falling streaks plus animated road puddles that
     // accumulate in rain and evaporate slowly after the weather clears.
@@ -256,6 +309,7 @@ export default function Game() {
     const morningSky=new THREE.Color(0x788b86),noonSky=new THREE.Color(0x91aaa5),eveningSky=new THREE.Color(0x6f625c);
     const morningSun=new THREE.Color(0xffc78c),noonSun=new THREE.Color(0xfff2d2),eveningSun=new THREE.Color(0xff8b58);
     const morningHemi=new THREE.Color(0xc5d2c9),noonHemi=new THREE.Color(0xe2ebe2),eveningHemi=new THREE.Color(0xb18f82);
+    const nightSky=new THREE.Color(0x101b24),nightSun=new THREE.Color(0x627083),nightHemi=new THREE.Color(0x263746);
     const phaseSky=new THREE.Color(),phaseSun=new THREE.Color(),phaseHemi=new THREE.Color();
 
     // Covered pedestrian bridges based on the reference: oxidized blue steel,
@@ -509,27 +563,47 @@ export default function Game() {
 
     // Street furniture follows the road geometry rather than being scattered:
     // lamps sit behind each curb and their arms always reach toward the lane.
-    const lampMetal=0x263638,lampGlow=new THREE.MeshStandardMaterial({color:0xffd77b,emissive:0xffa82d,emissiveIntensity:2.2,roughness:.35});
+    const lampMetal=0x263638,lampGlow=new THREE.MeshStandardMaterial({color:0x6d694e,emissive:0xffb338,emissiveIntensity:0,roughness:.35});
+    const lampBeamMaterial=new THREE.MeshBasicMaterial({
+      color:0xffc65c,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide,
+      blending:THREE.AdditiveBlending,
+    });
+    const lampBeamGeometry=new THREE.ConeGeometry(4.8,5.3,16,1,true);
+    const lampBeams:THREE.Mesh[]=[];
+    const lampPools:THREE.PointLight[]=[];
     const addStreetLamp=(x:number,z:number,vertical:boolean,side:number,index:number)=>{
       const g=new THREE.Group();g.position.set(x,0,z);scene.add(g);
       box(0,2.9,0,.15,5.8,.15,lampMetal,g);
       const toward=side<0?1:-1;
+      let headX=0,headZ=0;
       if(vertical){
         box(toward*.55,5.72,0,1.1,.12,.12,lampMetal,g);
         const head=new THREE.Mesh(boxGeo,lampGlow);head.position.set(toward*1.08,5.58,0);head.scale.set(.52,.13,.36);g.add(head);
-        if(index%4===0){const light=new THREE.PointLight(0xffc56a,1.1,9,2);light.position.set(toward*.95,5.25,0);g.add(light);}
+        headX=toward*1.08;
       }else{
         box(0,5.72,toward*.55,.12,.12,1.1,lampMetal,g);
         const head=new THREE.Mesh(boxGeo,lampGlow);head.position.set(0,5.58,toward*1.08);head.scale.set(.36,.13,.52);g.add(head);
-        if(index%4===0){const light=new THREE.PointLight(0xffc56a,1.1,9,2);light.position.set(0,5.25,toward*.95);g.add(light);}
+        headZ=toward*1.08;
+      }
+      // Every fixture gets a visible widening pool, matching the triangular
+      // silhouette of a real street lamp seen through humid night air.
+      const beam=new THREE.Mesh(lampBeamGeometry,lampBeamMaterial);
+      beam.position.set(headX,2.88,headZ);beam.renderOrder=1;g.add(beam);lampBeams.push(beam);
+      // A cheaper real light is shared at alternating fixtures; the visible beam
+      // still makes every lamp read as switched on.
+      if(index%2===0){
+        const pool=new THREE.PointLight(0xffb94f,0,10.5,2.15);pool.position.set(headX,.8,headZ);g.add(pool);lampPools.push(pool);
       }
     };
     let lampIndex=0;
-    for(const road of [-54,0,54])for(const side of [-1,1])for(let along=-72;along<=72;along+=18){
+    for(const road of verticalRoads)for(const side of [-1,1])for(let along=-72;along<=72;along+=18){
       // Skip the centres of crossing roads so poles never stand in crosswalks.
-      if([-54,0,54].some(crossing=>Math.abs(along-crossing)<8))continue;
-      addStreetLamp(road+side*10.25,along,true,side,lampIndex++);
-      addStreetLamp(along,road+side*10.25,false,side,lampIndex++);
+      if(horizontalRoads.some(crossing=>Math.abs(along-crossing.at)<crossing.width/2+2))continue;
+      addStreetLamp(road.at+side*(road.width/2+1.25),along,true,side,lampIndex++);
+    }
+    for(const road of horizontalRoads)for(const side of [-1,1])for(let along=-72;along<=72;along+=18){
+      if(verticalRoads.some(crossing=>Math.abs(along-crossing.at)<crossing.width/2+2))continue;
+      addStreetLamp(along,road.at+side*(road.width/2+1.25),false,side,lampIndex++);
     }
 
     // Open iron fencing runs along lot edges in short sections, with deliberate
@@ -1057,21 +1131,30 @@ export default function Game() {
     scene.remove(explosionWarmup);
     gameRef.current={start:()=>{active=true;finished=false;startAt=performance.now();setStarted(true);},restart};
     function animate(now:number){ requestAnimationFrame(animate); const dt=Math.min(.035,(now-last)/1000);last=now; const elapsed=active?(now-startAt)/1000:0; const remain=Math.max(0,90-elapsed);
-      // One match travels from cool early morning through bright noon to a
-      // long amber evening; weather then modulates that daylight instead of
-      // replacing it.
+      // One match travels from morning through noon and sunset into a visibly
+      // dark final quarter, when the complete street-light network switches on.
       const dayProgress=THREE.MathUtils.clamp(elapsed/90,0,1),phaseT=dayProgress<.5?dayProgress*2:(dayProgress-.5)*2;
       if(dayProgress<.5){
         phaseSky.lerpColors(morningSky,noonSky,phaseT);phaseSun.lerpColors(morningSun,noonSun,phaseT);phaseHemi.lerpColors(morningHemi,noonHemi,phaseT);
+      }else if(dayProgress<.76){
+        const sunsetT=(dayProgress-.5)/.26;
+        phaseSky.lerpColors(noonSky,eveningSky,sunsetT);phaseSun.lerpColors(noonSun,eveningSun,sunsetT);phaseHemi.lerpColors(noonHemi,eveningHemi,sunsetT);
       }else{
-        phaseSky.lerpColors(noonSky,eveningSky,phaseT);phaseSun.lerpColors(noonSun,eveningSun,phaseT);phaseHemi.lerpColors(noonHemi,eveningHemi,phaseT);
+        const nightT=(dayProgress-.76)/.24;
+        phaseSky.lerpColors(eveningSky,nightSky,nightT);phaseSun.lerpColors(eveningSun,nightSun,nightT);phaseHemi.lerpColors(eveningHemi,nightHemi,nightT);
       }
       (scene.background as THREE.Color).copy(phaseSky).multiplyScalar(1-rainStrength*.12);
       scene.fog!.color.copy(phaseSky).multiplyScalar(.94-rainStrength*.08);
       sun.color.copy(phaseSun);hemi.color.copy(phaseHemi);
       hemi.groundColor.set(dayProgress>.62?0x493b38:0x3f4840);
-      const daylight=dayProgress<.5?THREE.MathUtils.lerp(2.75,3.9,phaseT):THREE.MathUtils.lerp(3.9,2.45,phaseT);
-      hemi.intensity=(dayProgress<.5?THREE.MathUtils.lerp(2.25,3.05,phaseT):THREE.MathUtils.lerp(3.05,1.9,phaseT))*(1-rainStrength*.16);
+      const nightFactor=THREE.MathUtils.smoothstep(dayProgress,.7,.82);
+      const daylight=(dayProgress<.5?THREE.MathUtils.lerp(2.75,3.9,phaseT):THREE.MathUtils.lerp(3.9,.38,(dayProgress-.5)*2))*(1-nightFactor*.35);
+      hemi.intensity=(dayProgress<.5?THREE.MathUtils.lerp(2.25,3.05,phaseT):THREE.MathUtils.lerp(3.05,.48,(dayProgress-.5)*2))*(1-rainStrength*.16);
+      lampGlow.emissiveIntensity=nightFactor*5.5;
+      lampGlow.color.setRGB(.43+.57*nightFactor,.41+.39*nightFactor,.3+.12*nightFactor);
+      lampBeamMaterial.opacity=nightFactor*(.105+rainStrength*.055);
+      for(const beam of lampBeams)beam.visible=nightFactor>.015;
+      for(const pool of lampPools)pool.intensity=nightFactor*(2.2+rainStrength*.8);
       sun.position.x=THREE.MathUtils.lerp(-62,48,dayProgress);sun.position.z=THREE.MathUtils.lerp(26,-38,dayProgress);
       if(now>=weatherChangeAt){
         raining=!raining;

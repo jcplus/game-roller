@@ -795,7 +795,9 @@ export default function Game() {
     const alertMaterial=new THREE.SpriteMaterial({map:alertTexture,transparent:true,depthTest:true,depthWrite:false});
     const addPerson=(x:number,z:number,homeAxis:"x"|"z")=>{
       const g=new THREE.Group();g.position.set(x,.12,z);scene.add(g);
-      const body=new THREE.Group();body.position.y=.05;g.add(body);
+      // Authored at a convenient animation size, then reduced to a believable
+      // ~1.7 m silhouette beside the 1.65 m civilian cars.
+      const body=new THREE.Group();body.position.y=.05;body.scale.setScalar(.72);g.add(body);
       const clothing=[0x342b28,0x303b3b,0x4c342d,0x28323e][Math.floor(rng()*4)];
       const skin=[0x9b684d,0xb77d5d,0x704735][Math.floor(rng()*3)];
       box(0,1.15,0,.32,.62,.22,clothing,body);
@@ -808,8 +810,8 @@ export default function Game() {
       const leftArm=makeLimb(-.43,1.6,clothing,.82),rightArm=makeLimb(.43,1.6,clothing,.82);
       const leftLeg=makeLimb(-.18,.58,0x252523,.9),rightLeg=makeLimb(.18,.58,0x252523,.9);
       box(0,-.92,.08,.15,.08,.28,0x171717,leftLeg);box(0,-.92,.08,.15,.08,.28,0x171717,rightLeg);
-      const alert=new THREE.Sprite(alertMaterial);alert.position.set(0,3.05,0);alert.scale.set(1.05,1.05,1);alert.visible=false;g.add(alert);
-      const target:Target={mesh:g,radius:.55,value:900,kind:"person",minSize:.8,alive:true};targets.push(target);
+      const alert=new THREE.Sprite(alertMaterial);alert.position.set(0,2.18,0);alert.scale.set(.82,.82,1);alert.visible=false;g.add(alert);
+      const target:Target={mesh:g,radius:.42,value:900,kind:"person",minSize:.72,alive:true};targets.push(target);
       const sign=rng()>.5?1:-1,direction=homeAxis==="z"?new THREE.Vector3(0,0,sign):new THREE.Vector3(sign,0,0);
       pedestrians.push({target,body,leftArm,rightArm,leftLeg,rightLeg,alert,state:rng()>.28?"walk":"idle",direction,stateUntil:performance.now()+800+rng()*2500,gait:rng()*Math.PI*2,homeAxis});
     };
@@ -907,7 +909,18 @@ export default function Game() {
     const bloodDropMaterials=[0x6f0710,0x981018,0xc32227].map(color=>new THREE.MeshBasicMaterial({color,transparent:true,opacity:.9,depthWrite:false,side:THREE.DoubleSide}));
     const bodyBlood:{mesh:THREE.Mesh;born:number;life:number}[]=[];
     let bloodLoad=0,lastBloodPickup=0;const lastBloodPrint=player.position.clone();
-    const onKey=(e:KeyboardEvent)=>{ if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)) e.preventDefault(); keys.add(e.key.toLowerCase()); };
+    const onKey=(e:KeyboardEvent)=>{
+      if(e.key==="Enter"){
+        e.preventDefault();
+        if(!e.repeat){
+          if(finished)gameRef.current.restart();
+          else if(!active)gameRef.current.start();
+        }
+        return;
+      }
+      if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key))e.preventDefault();
+      keys.add(e.key.toLowerCase());
+    };
     const offKey=(e:KeyboardEvent)=>keys.delete(e.key.toLowerCase()); window.addEventListener("keydown",onKey);window.addEventListener("keyup",offKey);
     const onPointerDown=(e:PointerEvent)=>{dragging=true;dragX=e.clientX;renderer.domElement.setPointerCapture(e.pointerId);renderer.domElement.style.cursor="grabbing";};
     const onPointerMove=(e:PointerEvent)=>{if(!dragging)return;cameraYaw-=THREE.MathUtils.clamp(e.clientX-dragX,-80,80)*.008;dragX=e.clientX;};
@@ -1138,7 +1151,7 @@ export default function Game() {
         pedestrian.body.rotation.x=pedestrian.state==="run"?.16:0;
         if(pedestrian.state==="alert"){
           const shakeX=Math.sin(now*.105+pedestrian.gait)*.18,shakeY=Math.cos(now*.137+pedestrian.gait)*.09;
-          pedestrian.alert.position.set(shakeX,3.05+shakeY,0);
+          pedestrian.alert.position.set(shakeX,2.18+shakeY,0);
           pedestrian.alert.material.rotation=Math.sin(now*.13)*.13;
           pedestrian.body.rotation.z=Math.sin(now*.045+pedestrian.gait)*.035;
         }else{

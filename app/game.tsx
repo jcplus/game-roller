@@ -665,11 +665,14 @@ export default function Game() {
     addBillboard(-42,-11,0,"NIGHT DRIVE",0);addBillboard(41,11,Math.PI,"MEAT MARKET",1);
     addBillboard(-11,39,Math.PI/2,"STAY ALERT",2);addBillboard(11,-41,-Math.PI/2,"FIRE SAFE",3);
 
+    type VehicleAgent={mesh:THREE.Group;kind:"civilian"|"police"|"swat"|"fire";axis:"x"|"z";direction:1|-1;speed:number;maxSpeed:number;acceleration:number;heading:number;targetHeading:number;state:"road"|"pursue"|"parked"|"flee"|"crashed";crewDeployed:boolean;turnCooldown:number;brakeSpeed:number;reverseTimer:number;target?:THREE.Vector3;crash?:{age:number;smoke:THREE.Sprite;flame:THREE.Sprite}};
+    const vehicleAgents:VehicleAgent[]=[];
     const addCar = (x:number,z:number,c:number,rot=0) => {
       const g=new THREE.Group(); g.position.set(x,.7,z); g.rotation.y=rot; scene.add(g);
       box(0,0,0,3.3,.75,1.65,c,g); box(-.25,.65,0,1.7,.65,1.45,0x5c7278,g);
       for(const xx of [-1.05,1.05]) for(const zz of [-.86,.86]) { const w=new THREE.Mesh(cylGeo,mat(0x17191b)); w.scale.set(.38,.22,.38); w.rotation.x=Math.PI/2; w.position.set(xx,-.42,zz); g.add(w); }
       targets.push({mesh:g,radius:2.1,height:1.7,value:8500,kind:"car",minSize:1.45,alive:true});
+      return g;
     };
     const glowCanvas=document.createElement("canvas"); glowCanvas.width=glowCanvas.height=128;
     const glowContext=glowCanvas.getContext("2d")!;
@@ -687,7 +690,6 @@ export default function Game() {
     const explosionSmokeBases=[0x2c2926,0x45403a,0x5b5145].map(color=>new THREE.SpriteMaterial({map:glowTexture,color,transparent:true,opacity:.62,depthWrite:false,blending:THREE.NormalBlending}));
     const explosionSparkGeometry=new THREE.BoxGeometry(.045,.045,.65);
     const explosionRingGeometry=new THREE.RingGeometry(.7,1,32);
-    const explosionScorchGeometry=new THREE.CircleGeometry(2.7,24);
     const explosionWarmup=new THREE.Group();explosionWarmup.position.set(0,-1000,0);
     for(const material of [...explosionFireBases,...explosionSmokeBases])explosionWarmup.add(new THREE.Sprite(material));
     explosionWarmup.add(new THREE.Mesh(explosionSparkGeometry,new THREE.MeshBasicMaterial({color:0xffc14b})));
@@ -745,6 +747,7 @@ export default function Game() {
       const bluePoint=new THREE.PointLight(0x1bbfff,0,9,2); bluePoint.position.set(.2,1.65,0); g.add(bluePoint);
       policeLights.push({red:redMat,blue:blueMat,redGlow,blueGlow,redPoint,bluePoint,redSprite,blueSprite});
       targets.push({mesh:g,radius:2.25,height:1.9,value:12500,kind:"car",minSize:1.55,alive:true});
+      return g;
     };
     const addFireTruck=(x:number,z:number,rot=0)=>{
       const g=new THREE.Group();g.position.set(x,1.02,z);g.rotation.y=rot;scene.add(g);
@@ -798,14 +801,17 @@ export default function Game() {
         const glow=new THREE.Sprite(glowMat);glow.position.copy(beacon.position);glow.scale.set(3.8,3.8,1);g.add(glow);
       }
       targets.push({mesh:g,radius:3.25,height:2.55,value:18000,kind:"car",minSize:1.85,alive:true});
+      return g;
     };
     const roadVals=[-54,0,54];
-    for(let i=0;i<36;i++) {
+    // Only civilian traffic is present at load. Emergency units are dispatched
+    // from beyond the visible city after the disaster begins.
+    for(let i=0;i<26;i++) {
       const vertical=rng()>.5, lane=(rng()>.5?1:-1)*4.2, main=roadVals[Math.floor(rng()*3)], along=-78+rng()*156;
       const x=vertical?main+lane:along, z=vertical?along:main+lane, rot=vertical?0:Math.PI/2;
-      if(i%9===0)addFireTruck(x,z,rot);
-      else if(i%3===0) addPoliceCar(x,z,rot);
-      else addCar(x,z,[0xd7c850,0xa93f39,0x507c8b,0xddd9c7,0x24292e][i%5],rot);
+      const car=addCar(x,z,[0xd7c850,0xa93f39,0x507c8b,0xddd9c7,0x24292e][i%5],rot);
+      const direction=(rng()>.5?1:-1) as 1|-1,heading=vertical?(direction>0?Math.PI/2:-Math.PI/2):(direction>0?0:Math.PI);
+      vehicleAgents.push({mesh:car,kind:"civilian",axis:vertical?"z":"x",direction,speed:0,maxSpeed:8.5+rng()*2.5,acceleration:2.8,heading,targetHeading:heading,state:"road",crewDeployed:false,turnCooldown:0,brakeSpeed:0,reverseTimer:0});
     }
 
     const foliagePalettes=[
@@ -985,6 +991,41 @@ export default function Game() {
     player.position.set(-54,1.1,-70);
     const shadow=new THREE.Mesh(new THREE.CircleGeometry(2,24),new THREE.MeshBasicMaterial({color:0x1b0d0b,transparent:true,opacity:.35,depthWrite:false})); shadow.rotation.x=-Math.PI/2; shadow.position.y=-1; player.add(shadow);
 
+    type Responder={mesh:THREE.Group;kind:"police"|"swat"|"firefighter";source:VehicleAgent;side:number;cooldown:number;hose?:THREE.Line};
+    type Wreck={group:THREE.Group;scorch:THREE.Mesh;flames:THREE.Sprite[];smoke:THREE.Sprite[];life:number;maxLife:number};
+    const responders:Responder[]=[],wrecks:Wreck[]=[],tracers:{line:THREE.Line;life:number}[]=[],skidMarks:{mesh:THREE.Mesh;born:number}[]=[],evacuees:{mesh:THREE.Group;direction:THREE.Vector3;gait:number}[]=[];
+    let nextPoliceDispatch=4500,nextFireDispatch=7000;
+    const spawnPerson=(vehicle:VehicleAgent,kind:Responder["kind"],side:number)=>{
+      const g=new THREE.Group();g.position.copy(vehicle.mesh.position).add(new THREE.Vector3(0,0,side*1.5));scene.add(g);
+      box(0,.85,0,.42,1.05,.34,kind==="firefighter"?0xd7a52b:kind==="swat"?0x172126:0x294c68,g);
+      const head=new THREE.Mesh(sphereGeo,mat(0xc78d68));head.scale.setScalar(.24);head.position.y=1.55;g.add(head);
+      if(kind!=="firefighter")box(0,1.05,.32,.08,.08,.7,kind==="swat"?0x111716:0x292a29,g);
+      const responder:Responder={mesh:g,kind,source:vehicle,side,cooldown:rng()};
+      if(kind==="firefighter"){
+        const geometry=new THREE.BufferGeometry().setFromPoints([vehicle.mesh.position.clone(),g.position.clone()]);
+        const hose=new THREE.Line(geometry,new THREE.LineBasicMaterial({color:0x342d22}));scene.add(hose);responder.hose=hose;
+      }
+      responders.push(responder);
+    };
+    const spawnEmergency=(kind:"police"|"swat"|"fire")=>{
+      const edge=rng()>.5?1:-1,vertical=rng()>.5;
+      const lane=(rng()>.5?1:-1)*4.2,road=roadVals[Math.floor(rng()*roadVals.length)];
+      const x=vertical?road+lane:edge*96,z=vertical?edge*96:road+lane;
+      const mesh=kind==="fire"?addFireTruck(x,z,vertical?0:Math.PI/2):addPoliceCar(x,z,vertical?0:Math.PI/2);
+      const direction=(-edge) as 1|-1,heading=vertical?(direction>0?Math.PI/2:-Math.PI/2):(direction>0?0:Math.PI),maxSpeed=kind==="fire"?12.5:kind==="swat"?14:15;
+      vehicleAgents.push({mesh,kind,axis:vertical?"z":"x",direction,speed:0,maxSpeed,acceleration:kind==="fire"?2.3:3.5,heading,targetHeading:heading,state:"road",crewDeployed:false,turnCooldown:0,brakeSpeed:0,reverseTimer:0});
+    };
+    const steerOffRoad=(agent:{mesh:THREE.Group;targetHeading:number},destination:THREE.Vector3)=>{
+      const desired=destination.clone().sub(agent.mesh.position);desired.y=0;if(!desired.lengthSq())return;
+      desired.normalize();
+      for(const obstacle of targets){
+        if(!obstacle.alive||obstacle.mesh===agent.mesh||obstacle.kind==="fragment")continue;
+        const delta=agent.mesh.position.clone().sub(obstacle.mesh.position);delta.y=0;const range=obstacle.radius+3;
+        if(delta.lengthSq()<range*range&&delta.dot(desired)<.5)desired.addScaledVector(delta.normalize(),1.8);
+      }
+      desired.normalize();agent.targetHeading=Math.atan2(desired.z,desired.x);
+    };
+
     const BASE_RADIUS=1.38;
     const velocity=new THREE.Vector3();
     const keys=new Set<string>(); let active=false, finished=false, startAt=0, last=performance.now(), score=0, people=0, combo=1, destroyed=0, radius=BASE_RADIUS, comboAt=0;
@@ -1079,13 +1120,43 @@ export default function Game() {
         piece.scale.set(wheel?.3:.35+rng()*.6,wheel?.18:.08+rng()*.22,wheel?.3:.3+rng()*.55);piece.castShadow=true;scene.add(piece);
         debris.push({mesh:piece,vel:new THREE.Vector3((rng()-.5)*12,4+rng()*8,(rng()-.5)*12),spin:new THREE.Vector3((rng()-.5)*14,(rng()-.5)*14,(rng()-.5)*14),life:5+rng()*3});
       }
-      const scorch=new THREE.Mesh(explosionScorchGeometry,new THREE.MeshBasicMaterial({color:0x17120e,transparent:true,opacity:.72,depthWrite:false}));
-      scorch.scale.setScalar(.82+rng()*.38);
-      scorch.rotation.x=-Math.PI/2;scorch.position.set(position.x,.18,position.z);scene.add(scorch);
+      // Soft, asymmetric burn stain: deliberately neither a circle nor a rectangle.
+      const scorchShape=new THREE.Shape();
+      for(let i=0;i<18;i++){const a=i/18*Math.PI*2,r=(i%3===0?.72:1)*(2.3+rng()*.85),x=Math.cos(a)*r*1.35,y=Math.sin(a)*r*.72;i?scorchShape.lineTo(x,y):scorchShape.moveTo(x,y);}
+      scorchShape.closePath();
+      const scorch=new THREE.Mesh(new THREE.ShapeGeometry(scorchShape),new THREE.MeshBasicMaterial({color:0x100e0c,transparent:true,opacity:.64,depthWrite:false}));
+      scorch.rotation.x=-Math.PI/2;scorch.rotation.z=rng()*Math.PI;scorch.position.set(position.x,.18,position.z);scene.add(scorch);
+      const wreck=new THREE.Group();wreck.position.set(position.x,.36,position.z);wreck.rotation.y=car.mesh.rotation.y+(rng()-.5)*.3;scene.add(wreck);
+      box(0,0,0,2.8,.25,1.35,0x17191a,wreck);box(.15,.22,0,1.65,.18,1.12,0x242322,wreck);
+      for(let i=0;i<5;i++){const dent=box((rng()-.5)*2.3,.3+rng()*.16,(rng()-.5)*.9,.35+rng()*.7,.08+rng()*.18,.25+rng()*.5,i%2?0x0c0d0d:0x302824,wreck);dent.rotation.y=rng()*Math.PI;}
+      wreck.scale.y=.58;
+      const lingeringFlames:THREE.Sprite[]=[],lingeringSmoke:THREE.Sprite[]=[];
+      for(let i=0;i<9;i++){
+        const smoke=i>=4,material=(smoke?explosionSmokeBases:explosionFireBases)[i%3].clone(),sprite=new THREE.Sprite(material);
+        sprite.position.set(position.x+(rng()-.5)*1.8,.65+rng()*1.2,position.z+(rng()-.5)*1);sprite.scale.setScalar(smoke?1.5:1);scene.add(sprite);(smoke?lingeringSmoke:lingeringFlames).push(sprite);
+      }
+      wrecks.push({group:wreck,scorch,flames:lingeringFlames,smoke:lingeringSmoke,life:24,maxLife:24});
       const ring=new THREE.Mesh(explosionRingGeometry,new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
       ring.rotation.x=-Math.PI/2;ring.position.set(position.x,.24,position.z);scene.add(ring);
       const light=new THREE.PointLight(0xff721c,18,18,2);light.position.copy(position).setY(2);scene.add(light);
       explosions.push({sprites,sparks,ring,light,age:0,life:3});explosionShake=Math.min(1.4,explosionShake+.85);
+    };
+    const deployCrashOccupants=(agent:VehicleAgent)=>{
+      if(agent.crewDeployed)return;agent.crewDeployed=true;
+      if(agent.kind!=="civilian"){
+        const crewKind=agent.kind==="fire"?"firefighter":agent.kind==="swat"?"swat":"police";spawnPerson(agent,crewKind,-1);spawnPerson(agent,crewKind,1);return;
+      }
+      for(const side of [-1,1]){
+        const g=new THREE.Group();g.position.copy(agent.mesh.position).add(new THREE.Vector3(0,.05,side*1.35));scene.add(g);
+        box(0,.8,0,.38,1,.32,[0x81705c,0x4b6981,0x8b493f][Math.floor(rng()*3)],g);const head=new THREE.Mesh(sphereGeo,mat(0xc78d68));head.scale.setScalar(.23);head.position.y=1.48;g.add(head);
+        const direction=g.position.clone().sub(player.position).setY(0).normalize();evacuees.push({mesh:g,direction,gait:rng()*Math.PI*2});
+      }
+    };
+    const igniteCrash=(agent:VehicleAgent,impact:THREE.Vector3)=>{
+      if(agent.state==="crashed"||!agent.mesh.parent)return;agent.state="crashed";agent.brakeSpeed=agent.speed;agent.speed=0;deployCrashOccupants(agent);
+      const smokeMaterial=explosionSmokeBases[0].clone(),flameMaterial=explosionFireBases[1].clone();
+      const smoke=new THREE.Sprite(smokeMaterial),flame=new THREE.Sprite(flameMaterial);const localImpact=impact.clone().sub(agent.mesh.position).setY(.55);
+      smoke.position.copy(localImpact);flame.position.copy(localImpact);smoke.scale.setScalar(.25);flame.scale.setScalar(.08);agent.mesh.add(smoke,flame);agent.crash={age:0,smoke,flame};
     };
     const collect=(t:Target)=>{ t.alive=false; score+=Math.round(t.value*combo); combo=Math.min(99,combo+1); comboAt=performance.now(); if(t.kind==="person"){people++;growParasiteMass(people);}if(t.kind==="car")explodeCar(t);if(t.kind==="building"){destroyed++;shatter(t);t.mesh.scale.y=.08;t.mesh.position.y=-.5;}else{scene.remove(t.mesh);} if(t.kind==="person")radius=Math.min(6.8,radius+.038); };
     const crushPerson=(t:Target,impactDirection:THREE.Vector3,impactForce:number)=>{
@@ -1226,6 +1297,96 @@ export default function Game() {
         const activeScale=5.2+sirenPulse*1.4, inactiveScale=3.2;
         lights.redSprite.scale.setScalar(flash?activeScale:inactiveScale);
         lights.blueSprite.scale.setScalar(flash?inactiveScale:activeScale);
+      }
+      if(active){
+        const sinceStart=now-startAt;
+        if(sinceStart>nextPoliceDispatch){spawnEmergency(rng()>.72?"swat":"police");nextPoliceDispatch=sinceStart+9000+rng()*6000;}
+        if(sinceStart>nextFireDispatch&&vehicleAgents.filter(v=>v.kind==="fire"&&v.mesh.parent).length<3){spawnEmergency("fire");nextFireDispatch=sinceStart+11000+rng()*7000;}
+      }
+      // Shared navigation: every vehicle follows its lane direction normally;
+      // only explicit danger/pursuit states enter the obstacle-aware free-space solver.
+      for(const agent of vehicleAgents){
+        if(!agent.mesh.parent)continue;agent.turnCooldown=Math.max(0,agent.turnCooldown-dt);
+        const distToThreat=agent.mesh.position.distanceTo(player.position),previousState=agent.state;
+        if(agent.kind==="civilian"&&active&&distToThreat<11+radius*1.5){
+          if(agent.state!=="flee"){const towardThreat=player.position.clone().sub(agent.mesh.position).setY(0).normalize().dot(new THREE.Vector3(Math.cos(agent.heading),0,Math.sin(agent.heading)));if(distToThreat<8+radius&&towardThreat>.25)agent.reverseTimer=1.15;}
+          agent.state="flee";
+        }
+        if((agent.kind==="police"||agent.kind==="swat")&&agent.state==="road"&&distToThreat<28)agent.state="pursue";
+        if(agent.kind==="fire"){
+          const fire=wrecks.filter(w=>w.life>0).sort((a,b)=>a.group.position.distanceToSquared(agent.mesh.position)-b.group.position.distanceToSquared(agent.mesh.position))[0];agent.target=fire?.group.position;
+          if(fire&&agent.mesh.position.distanceTo(fire.group.position)<10)agent.state="parked";
+        }
+        if(agent.state==="road"){
+          const goal=agent.kind==="fire"&&agent.target?agent.target:player.position;
+          const coordinate=agent.axis==="x"?agent.mesh.position.x:agent.mesh.position.z;
+          const atIntersection=roadVals.some(v=>Math.abs(coordinate-v)<.55);
+          if(atIntersection&&agent.kind!=="civilian"&&agent.turnCooldown<=0){
+            const otherAxis=agent.axis==="x"?"z":"x",difference=otherAxis==="x"?goal.x-agent.mesh.position.x:goal.z-agent.mesh.position.z;
+            if(Math.abs(difference)>10){agent.axis=otherAxis;agent.direction=(difference>=0?1:-1);agent.turnCooldown=1.15;}
+          }
+          agent.targetHeading=agent.axis==="x"?(agent.direction>0?0:Math.PI):(agent.direction>0?Math.PI/2:-Math.PI/2);
+        }else if(agent.state==="flee"){
+          const escape=agent.mesh.position.clone().sub(player.position).setY(0).normalize().multiplyScalar(45).add(agent.mesh.position);steerOffRoad(agent,escape);
+        }else if(agent.state==="pursue"){
+          if(distToThreat>7+radius)steerOffRoad(agent,player.position);else agent.state="parked";
+        }
+        const wantsStop=agent.state==="parked"||agent.state==="crashed";
+        if(wantsStop&&previousState!==agent.state)agent.brakeSpeed=agent.speed;
+        const targetSpeed=wantsStop?0:agent.maxSpeed;
+        const rate=targetSpeed>agent.speed?agent.acceleration:(agent.state==="parked"?12:6.5);
+        agent.speed=THREE.MathUtils.damp(agent.speed,targetSpeed,rate/Math.max(1,targetSpeed),dt);
+        const angleDelta=Math.atan2(Math.sin(agent.targetHeading-agent.heading),Math.cos(agent.targetHeading-agent.heading));
+        agent.heading+=THREE.MathUtils.clamp(angleDelta,-1.65*dt,1.65*dt);
+        agent.mesh.rotation.y=Math.PI-agent.heading;
+        agent.reverseTimer=Math.max(0,agent.reverseTimer-dt);if(agent.state!=="crashed")agent.mesh.position.add(new THREE.Vector3(Math.cos(agent.heading),0,Math.sin(agent.heading)).multiplyScalar(agent.speed*dt*(agent.reverseTimer>0?-0.62:1)));
+        const braking=Math.max(0,agent.brakeSpeed-agent.speed);agent.mesh.rotation.z=THREE.MathUtils.damp(agent.mesh.rotation.z,wantsStop&&braking>.8?.09:0,9,dt);
+        if(wantsStop&&agent.brakeSpeed>5&&agent.speed>1&&Math.floor(now/55)%2===0){
+          const mark=new THREE.Mesh(new THREE.PlaneGeometry(.18,.75),new THREE.MeshBasicMaterial({color:0x111313,transparent:true,opacity:.62,depthWrite:false}));mark.rotation.x=-Math.PI/2;mark.rotation.z=-agent.heading+Math.PI/2;mark.position.copy(agent.mesh.position).setY(.19);scene.add(mark);skidMarks.push({mesh:mark,born:now});
+        }
+        if(wantsStop&&agent.speed<.3)agent.brakeSpeed=0;
+        if(agent.state==="parked"&&!agent.crewDeployed){agent.crewDeployed=true;const crewKind=agent.kind==="fire"?"firefighter":agent.kind==="swat"?"swat":"police";spawnPerson(agent,crewKind,-1);spawnPerson(agent,crewKind,1);}
+        if(agent.crash){
+          agent.crash.age+=dt;const growth=THREE.MathUtils.clamp(agent.crash.age/4.2,0,1);agent.crash.smoke.scale.setScalar(.25+growth*2.5);agent.crash.flame.scale.setScalar(.08+growth*1.35);
+          (agent.crash.smoke.material as THREE.SpriteMaterial).opacity=.25+growth*.42;(agent.crash.flame.material as THREE.SpriteMaterial).opacity=.25+growth*.7;
+          if(agent.crash.age>5.2){const target=targets.find(t=>t.mesh===agent.mesh&&t.alive);if(target)collect(target);agent.crash=undefined;}
+        }
+      }
+      // Vehicle/vehicle and vehicle/building impacts share one crash lifecycle.
+      for(let i=0;i<vehicleAgents.length;i++){
+        const a=vehicleAgents[i];if(!a.mesh.parent||a.state==="crashed")continue;
+        for(let j=i+1;j<vehicleAgents.length;j++){const b=vehicleAgents[j];if(!b.mesh.parent||b.state==="crashed")continue;if(a.mesh.position.distanceToSquared(b.mesh.position)<13){const impact=a.mesh.position.clone().lerp(b.mesh.position,.5);igniteCrash(a,impact);igniteCrash(b,impact);}}
+        for(const obstacle of targets){if(!obstacle.alive||obstacle.kind!=="building")continue;const distance=Math.hypot(a.mesh.position.x-obstacle.mesh.position.x,a.mesh.position.z-obstacle.mesh.position.z);if(distance<obstacle.radius+1.4){igniteCrash(a,a.mesh.position.clone().lerp(obstacle.mesh.position,.35));break;}}
+      }
+      for(const evacuee of evacuees){evacuee.gait+=dt*13;const away=evacuee.mesh.position.clone().sub(player.position).setY(0).normalize();evacuee.direction.lerp(away,.12).normalize();evacuee.mesh.position.addScaledVector(evacuee.direction,5.5*dt);evacuee.mesh.rotation.y=Math.atan2(evacuee.direction.x,evacuee.direction.z);evacuee.mesh.position.y=.05+Math.abs(Math.sin(evacuee.gait))*.08;}
+      for(let i=skidMarks.length-1;i>=0;i--){const mark=skidMarks[i],age=(now-mark.born)/1000;(mark.mesh.material as THREE.MeshBasicMaterial).opacity=.62*THREE.MathUtils.clamp((18-age)/7,0,1);if(age>18){scene.remove(mark.mesh);mark.mesh.geometry.dispose();(mark.mesh.material as THREE.Material).dispose();skidMarks.splice(i,1);}}
+      for(const responder of responders){
+        if(!responder.mesh.parent)continue;responder.cooldown-=dt;
+        const destination=responder.kind==="firefighter"?responder.source.target:player.position;
+        if(!destination)continue;const delta=destination.clone().sub(responder.mesh.position).setY(0),distance=delta.length();
+        const range=responder.kind==="swat"?19:responder.kind==="police"?12:7;
+        if(distance>range*.78){const temp={mesh:responder.mesh,targetHeading:0};steerOffRoad(temp,destination);const step=destination.clone().sub(responder.mesh.position).setY(0).normalize();responder.mesh.position.addScaledVector(step,(responder.kind==="firefighter"?3.2:4.2)*dt);}
+        responder.mesh.rotation.y=Math.atan2(-delta.z,delta.x);
+        if(responder.hose){
+          const points=[responder.source.mesh.position.clone().setY(.45),responder.mesh.position.clone().setY(.35)];responder.hose.geometry.setFromPoints(points);
+        }
+        if(distance<range&&responder.cooldown<=0){
+          responder.cooldown=responder.kind==="swat"?.12:responder.kind==="police"?.72:.09;
+          if(responder.kind==="firefighter"){
+            const victim=wrecks.find(w=>w.group.position.distanceTo(destination)<1);if(victim)victim.life-=.11;
+          }else{
+            const geometry=new THREE.BufferGeometry().setFromPoints([responder.mesh.position.clone().setY(1.1),player.position.clone().setY(radius*.7)]);
+            const line=new THREE.Line(geometry,new THREE.LineBasicMaterial({color:responder.kind==="swat"?0xffd56a:0xffecac,transparent:true,opacity:.9}));scene.add(line);tracers.push({line,life:.07});
+          }
+        }
+      }
+      for(let i=tracers.length-1;i>=0;i--){tracers[i].life-=dt;if(tracers[i].life<=0){scene.remove(tracers[i].line);tracers[i].line.geometry.dispose();(tracers[i].line.material as THREE.Material).dispose();tracers.splice(i,1);}}
+      for(let i=wrecks.length-1;i>=0;i--){
+        const wreck=wrecks[i];wreck.life-=dt;const decay=THREE.MathUtils.clamp(wreck.life/wreck.maxLife,0,1);
+        wreck.group.scale.set(1,.58,1).multiplyScalar(.72+.28*decay);(wreck.scorch.material as THREE.MeshBasicMaterial).opacity=.64*Math.min(1,decay*3);
+        for(const flame of wreck.flames){flame.scale.setScalar((.25+.9*rng())*decay);(flame.material as THREE.SpriteMaterial).opacity=.85*decay;}
+        for(const smoke of wreck.smoke){smoke.position.y+=dt*(.35+.5*decay);smoke.scale.setScalar((1.2+rng())*decay);(smoke.material as THREE.SpriteMaterial).opacity=.48*decay;}
+        if(wreck.life<=0){scene.remove(wreck.group,wreck.scorch);wreck.scorch.geometry.dispose();(wreck.scorch.material as THREE.Material).dispose();for(const particle of [...wreck.flames,...wreck.smoke]){scene.remove(particle);(particle.material as THREE.Material).dispose();}wrecks.splice(i,1);}
       }
       // Inner ribbons twitch subtly while exposed outer parasites wriggle much more.
       for(const strand of parasiteStrands){

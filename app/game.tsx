@@ -1157,9 +1157,9 @@ export default function Game() {
       for(let i=0;i<5;i++){const dent=box((rng()-.5)*2.3,.3+rng()*.16,(rng()-.5)*.9,.35+rng()*.7,.08+rng()*.18,.25+rng()*.5,i%2?0x0c0d0d:0x302824,wreck);dent.rotation.y=rng()*Math.PI;}
       wreck.scale.y=.58;
       const lingeringFlames:THREE.Sprite[]=[],lingeringSmoke:THREE.Sprite[]=[];
-      for(let i=0;i<9;i++){
-        const smoke=i>=4,material=(smoke?explosionSmokeBases:flameSliceBases)[i%3].clone(),sprite=new THREE.Sprite(material);
-        sprite.position.set(position.x+(rng()-.5)*1.8,.65+rng()*1.2,position.z+(rng()-.5)*1);if(smoke)sprite.scale.setScalar(1.5);else{sprite.scale.set(.65,1.65,1);sprite.userData.flamePhase=rng()*Math.PI*2;}scene.add(sprite);(smoke?lingeringSmoke:lingeringFlames).push(sprite);
+      for(let i=0;i<16;i++){
+        const smoke=i>=10,material=(smoke?explosionSmokeBases:flameSliceBases)[i%3].clone(),sprite=new THREE.Sprite(material);
+        sprite.position.set(position.x+(rng()-.5)*2.6,.7+rng()*1.4,position.z+(rng()-.5)*1.45);if(smoke)sprite.scale.setScalar(1.8);else{sprite.scale.set(1.05,2.75,1);sprite.userData.flamePhase=rng()*Math.PI*2;}scene.add(sprite);(smoke?lingeringSmoke:lingeringFlames).push(sprite);
       }
       wrecks.push({group:wreck,scorch,flames:lingeringFlames,smoke:lingeringSmoke,life:40,maxLife:40});
       const ring=new THREE.Mesh(explosionRingGeometry,new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
@@ -1426,7 +1426,7 @@ export default function Game() {
       for(let i=wrecks.length-1;i>=0;i--){
         const wreck=wrecks[i];wreck.life-=dt;const decay=THREE.MathUtils.clamp(wreck.life/wreck.maxLife,0,1);
         wreck.group.scale.set(1,.58,1).multiplyScalar(.72+.28*decay);(wreck.scorch.material as THREE.MeshBasicMaterial).opacity=.64*Math.min(1,decay*3);
-        for(const flame of wreck.flames){const readable=decay>.2,flicker=.88+.12*Math.sin(now*.011+(flame.userData.flamePhase as number));flame.visible=readable;flame.scale.set(readable?.58*flicker:0,readable?1.5*flicker*(.72+.28*decay):0,1);flame.material.rotation=Math.sin(now*.006+(flame.userData.flamePhase as number))*.14;(flame.material as THREE.SpriteMaterial).opacity=readable?.88*decay:0;}
+        for(const flame of wreck.flames){const readable=decay>.2,flicker=.88+.12*Math.sin(now*.011+(flame.userData.flamePhase as number));flame.visible=readable;flame.scale.set(readable?.95*flicker*(.45+.55*decay):0,readable?2.55*flicker*(.45+.55*decay):0,1);flame.material.rotation=Math.sin(now*.006+(flame.userData.flamePhase as number))*.14;(flame.material as THREE.SpriteMaterial).opacity=readable?.88*decay:0;}
         for(const smoke of wreck.smoke){smoke.position.y+=dt*(.35+.5*decay);smoke.scale.setScalar((1.2+rng())*decay);(smoke.material as THREE.SpriteMaterial).opacity=.48*decay;}
         if(wreck.life<=0){scene.remove(wreck.group,wreck.scorch);wreck.scorch.geometry.dispose();(wreck.scorch.material as THREE.Material).dispose();for(const particle of [...wreck.flames,...wreck.smoke]){scene.remove(particle);(particle.material as THREE.Material).dispose();}wrecks.splice(i,1);}
       }

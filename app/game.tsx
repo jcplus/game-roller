@@ -683,6 +683,15 @@ export default function Game() {
     glowGradient.addColorStop(1,"rgba(255,255,255,0)");
     glowContext.fillStyle=glowGradient; glowContext.fillRect(0,0,128,128);
     const glowTexture=new THREE.CanvasTexture(glowCanvas);
+    // A vertically authored flame slice keeps a recognisable tongue silhouette
+    // after the deliberately coarse framebuffer pass, unlike a radial glow.
+    const flameCanvas=document.createElement("canvas");flameCanvas.width=64;flameCanvas.height=128;
+    const flameContext=flameCanvas.getContext("2d")!;const flameGradient=flameContext.createLinearGradient(0,118,0,8);
+    flameGradient.addColorStop(0,"rgba(255,52,4,0)");flameGradient.addColorStop(.12,"rgba(255,58,4,.95)");flameGradient.addColorStop(.5,"rgba(255,151,17,.92)");flameGradient.addColorStop(.78,"rgba(255,224,93,.72)");flameGradient.addColorStop(1,"rgba(255,244,170,0)");
+    flameContext.fillStyle=flameGradient;flameContext.beginPath();flameContext.moveTo(31,124);flameContext.bezierCurveTo(4,106,12,78,24,60);flameContext.bezierCurveTo(15,43,30,20,39,5);flameContext.bezierCurveTo(43,32,58,43,47,68);flameContext.bezierCurveTo(62,91,55,116,31,124);flameContext.fill();
+    flameContext.fillStyle="rgba(255,238,132,.72)";flameContext.beginPath();flameContext.moveTo(31,116);flameContext.bezierCurveTo(18,98,27,75,34,55);flameContext.bezierCurveTo(48,82,47,105,31,116);flameContext.fill();
+    const flameTexture=new THREE.CanvasTexture(flameCanvas);flameTexture.colorSpace=THREE.SRGBColorSpace;flameTexture.magFilter=THREE.LinearFilter;flameTexture.minFilter=THREE.LinearFilter;
+    const flameSliceBases=[0xfff0a0,0xffa21c,0xff5a0a].map(color=>new THREE.SpriteMaterial({map:flameTexture,color,transparent:true,opacity:.9,alphaTest:.035,depthWrite:false,blending:THREE.AdditiveBlending}));
     // Explosion resources are allocated and shader-warmed during loading. Creating
     // dozens of geometries and compiling transparent shaders on first impact caused
     // the former multi-second hitch.
@@ -1149,8 +1158,8 @@ export default function Game() {
       wreck.scale.y=.58;
       const lingeringFlames:THREE.Sprite[]=[],lingeringSmoke:THREE.Sprite[]=[];
       for(let i=0;i<9;i++){
-        const smoke=i>=4,material=(smoke?explosionSmokeBases:explosionFireBases)[i%3].clone(),sprite=new THREE.Sprite(material);
-        sprite.position.set(position.x+(rng()-.5)*1.8,.65+rng()*1.2,position.z+(rng()-.5)*1);sprite.scale.setScalar(smoke?1.5:1);scene.add(sprite);(smoke?lingeringSmoke:lingeringFlames).push(sprite);
+        const smoke=i>=4,material=(smoke?explosionSmokeBases:flameSliceBases)[i%3].clone(),sprite=new THREE.Sprite(material);
+        sprite.position.set(position.x+(rng()-.5)*1.8,.65+rng()*1.2,position.z+(rng()-.5)*1);if(smoke)sprite.scale.setScalar(1.5);else{sprite.scale.set(.65,1.65,1);sprite.userData.flamePhase=rng()*Math.PI*2;}scene.add(sprite);(smoke?lingeringSmoke:lingeringFlames).push(sprite);
       }
       wrecks.push({group:wreck,scorch,flames:lingeringFlames,smoke:lingeringSmoke,life:40,maxLife:40});
       const ring=new THREE.Mesh(explosionRingGeometry,new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
@@ -1171,7 +1180,7 @@ export default function Game() {
     };
     const igniteCrash=(agent:VehicleAgent,impact:THREE.Vector3)=>{
       if(agent.state==="crashed"||!agent.mesh.parent)return;agent.state="crashed";agent.brakeSpeed=agent.speed;agent.speed=0;deployCrashOccupants(agent);
-      const smokeMaterial=explosionSmokeBases[0].clone(),flameMaterial=explosionFireBases[1].clone();
+      const smokeMaterial=explosionSmokeBases[0].clone(),flameMaterial=flameSliceBases[1].clone();
       const smoke=new THREE.Sprite(smokeMaterial),flame=new THREE.Sprite(flameMaterial);const localImpact=impact.clone().sub(agent.mesh.position).setY(.55);
       smoke.position.copy(localImpact);flame.position.copy(localImpact);smoke.scale.setScalar(.25);flame.scale.setScalar(.08);agent.mesh.add(smoke,flame);agent.crash={age:0,smoke,flame};
     };
@@ -1369,7 +1378,7 @@ export default function Game() {
           agent.crash.age+=dt;const growth=THREE.MathUtils.clamp(agent.crash.age/4.2,0,1);agent.crash.smoke.scale.setScalar(.25+growth*2.5);
           // Below a readable flame size the post-process turns the sprite into a
           // stray bright pixel, so keep it fully hidden until a flame silhouette exists.
-          agent.crash.flame.visible=growth>.14;agent.crash.flame.scale.setScalar(.55+growth*.95);
+          agent.crash.flame.visible=growth>.14;agent.crash.flame.scale.set(.45+growth*.55,1.05+growth*1.2,1);agent.crash.flame.material.rotation=Math.sin(now*.008)*.12;
           (agent.crash.smoke.material as THREE.SpriteMaterial).opacity=.25+growth*.42;(agent.crash.flame.material as THREE.SpriteMaterial).opacity=agent.crash.flame.visible?.35+growth*.6:0;
           if(agent.crash.age>5.2){const target=targets.find(t=>t.mesh===agent.mesh&&t.alive);if(target)collect(target);agent.crash=undefined;}
         }
@@ -1417,7 +1426,7 @@ export default function Game() {
       for(let i=wrecks.length-1;i>=0;i--){
         const wreck=wrecks[i];wreck.life-=dt;const decay=THREE.MathUtils.clamp(wreck.life/wreck.maxLife,0,1);
         wreck.group.scale.set(1,.58,1).multiplyScalar(.72+.28*decay);(wreck.scorch.material as THREE.MeshBasicMaterial).opacity=.64*Math.min(1,decay*3);
-        for(const flame of wreck.flames){const readable=decay>.2;flame.visible=readable;flame.scale.setScalar(readable?(.62+.72*rng())*(.72+.28*decay):0);(flame.material as THREE.SpriteMaterial).opacity=readable?.85*decay:0;}
+        for(const flame of wreck.flames){const readable=decay>.2,flicker=.88+.12*Math.sin(now*.011+(flame.userData.flamePhase as number));flame.visible=readable;flame.scale.set(readable?.58*flicker:0,readable?1.5*flicker*(.72+.28*decay):0,1);flame.material.rotation=Math.sin(now*.006+(flame.userData.flamePhase as number))*.14;(flame.material as THREE.SpriteMaterial).opacity=readable?.88*decay:0;}
         for(const smoke of wreck.smoke){smoke.position.y+=dt*(.35+.5*decay);smoke.scale.setScalar((1.2+rng())*decay);(smoke.material as THREE.SpriteMaterial).opacity=.48*decay;}
         if(wreck.life<=0){scene.remove(wreck.group,wreck.scorch);wreck.scorch.geometry.dispose();(wreck.scorch.material as THREE.Material).dispose();for(const particle of [...wreck.flames,...wreck.smoke]){scene.remove(particle);(particle.material as THREE.Material).dispose();}wrecks.splice(i,1);}
       }

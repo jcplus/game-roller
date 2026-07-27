@@ -1026,6 +1026,9 @@ export default function Game() {
       const lane=(rng()>.5?1:-1)*4.2,road=roadVals[Math.floor(rng()*roadVals.length)];
       const x=vertical?road+lane:edge*96,z=vertical?edge*96:road+lane;
       const mesh=kind==="fire"?addFireTruck(x,z,vertical?0:Math.PI/2):addPoliceCar(x,z,vertical?0:Math.PI/2);
+      // Dispatches exist for navigation immediately, but cannot render over the
+      // empty world beyond the authored city boundary.
+      mesh.visible=false;mesh.userData.waitingForCityEntry=true;
       const direction=(-edge) as 1|-1,heading=vertical?(direction>0?Math.PI/2:-Math.PI/2):(direction>0?0:Math.PI),maxSpeed=kind==="fire"?12.5:kind==="swat"?14:15;
       vehicleAgents.push({mesh,kind,axis:vertical?"z":"x",direction,speed:0,maxSpeed,acceleration:kind==="fire"?2.3:3.5,heading,targetHeading:heading,state:"road",crewDeployed:false,turnCooldown:0,brakeSpeed:0,reverseTimer:0});
     };
@@ -1320,7 +1323,9 @@ export default function Game() {
       // Shared navigation: every vehicle follows its lane direction normally;
       // only explicit danger/pursuit states enter the obstacle-aware free-space solver.
       for(const agent of vehicleAgents){
-        if(!agent.mesh.parent)continue;agent.turnCooldown=Math.max(0,agent.turnCooldown-dt);
+        if(!agent.mesh.parent)continue;
+        if(agent.mesh.userData.waitingForCityEntry&&Math.abs(agent.mesh.position.x)<=82&&Math.abs(agent.mesh.position.z)<=82){agent.mesh.visible=true;agent.mesh.userData.waitingForCityEntry=false;}
+        agent.turnCooldown=Math.max(0,agent.turnCooldown-dt);
         const distToThreat=agent.mesh.position.distanceTo(player.position),previousState=agent.state;
         if(agent.kind==="civilian"&&active&&distToThreat<11+radius*1.5){
           if(agent.state!=="flee"){const towardThreat=player.position.clone().sub(agent.mesh.position).setY(0).normalize().dot(new THREE.Vector3(Math.cos(agent.heading),0,Math.sin(agent.heading)));if(distToThreat<8+radius&&towardThreat>.25)agent.reverseTimer=1.15;}

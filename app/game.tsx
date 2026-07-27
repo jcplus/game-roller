@@ -1046,7 +1046,7 @@ export default function Game() {
     const BASE_RADIUS=1.38;
     const velocity=new THREE.Vector3();
     const keys=new Set<string>(); let active=false, finished=false, startAt=0, last=performance.now(), score=0, people=0, combo=1, destroyed=0, radius=BASE_RADIUS, comboAt=0;
-    let cameraYaw=Math.PI/4, dragging=false, dragX=0;
+    let cameraYaw=-Math.PI*3/4, dragging=false, dragX=0;camera.position.set(player.position.x+Math.sin(cameraYaw)*54,48,player.position.z+Math.cos(cameraYaw)*54);camera.lookAt(player.position);
     const debris:{mesh:THREE.Mesh;vel:THREE.Vector3;spin:THREE.Vector3;life:number;bloody?:boolean;lastTrail?:THREE.Vector3}[]=[];
     const explosions:{
       sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean}[];
@@ -1152,7 +1152,7 @@ export default function Game() {
         const smoke=i>=4,material=(smoke?explosionSmokeBases:explosionFireBases)[i%3].clone(),sprite=new THREE.Sprite(material);
         sprite.position.set(position.x+(rng()-.5)*1.8,.65+rng()*1.2,position.z+(rng()-.5)*1);sprite.scale.setScalar(smoke?1.5:1);scene.add(sprite);(smoke?lingeringSmoke:lingeringFlames).push(sprite);
       }
-      wrecks.push({group:wreck,scorch,flames:lingeringFlames,smoke:lingeringSmoke,life:24,maxLife:24});
+      wrecks.push({group:wreck,scorch,flames:lingeringFlames,smoke:lingeringSmoke,life:40,maxLife:40});
       const ring=new THREE.Mesh(explosionRingGeometry,new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
       ring.rotation.x=-Math.PI/2;ring.position.set(position.x,.24,position.z);scene.add(ring);
       const light=new THREE.PointLight(0xff721c,18,18,2);light.position.copy(position).setY(2);scene.add(light);

@@ -1157,9 +1157,11 @@ export default function Game() {
       for(let i=0;i<5;i++){const dent=box((rng()-.5)*2.3,.3+rng()*.16,(rng()-.5)*.9,.35+rng()*.7,.08+rng()*.18,.25+rng()*.5,i%2?0x0c0d0d:0x302824,wreck);dent.rotation.y=rng()*Math.PI;}
       wreck.scale.y=.58;
       const lingeringFlames:THREE.Sprite[]=[],lingeringSmoke:THREE.Sprite[]=[];
-      for(let i=0;i<16;i++){
-        const smoke=i>=10,material=(smoke?explosionSmokeBases:flameSliceBases)[i%3].clone(),sprite=new THREE.Sprite(material);
-        sprite.position.set(position.x+(rng()-.5)*2.6,.7+rng()*1.4,position.z+(rng()-.5)*1.45);if(smoke)sprite.scale.setScalar(1.8);else{sprite.scale.set(1.05,2.75,1);sprite.userData.flamePhase=rng()*Math.PI*2;}scene.add(sprite);(smoke?lingeringSmoke:lingeringFlames).push(sprite);
+      for(let i=0;i<22;i++){
+        const smoke=i>=10,material=(smoke?explosionSmokeBases:flameSliceBases)[i%3].clone(),sprite=new THREE.Sprite(material),phase=rng();
+        sprite.position.set(position.x+(rng()-.5)*2.9,.7+rng()*1.35,position.z+(rng()-.5)*1.65);sprite.userData.effectPhase=phase;
+        if(smoke){sprite.userData.baseOffset=new THREE.Vector3((rng()-.5)*2.3,0,(rng()-.5)*1.5);sprite.scale.setScalar(2.1);}else{sprite.scale.set(1.35,2.85,1);sprite.userData.basePosition=sprite.position.clone();}
+        scene.add(sprite);(smoke?lingeringSmoke:lingeringFlames).push(sprite);
       }
       wrecks.push({group:wreck,scorch,flames:lingeringFlames,smoke:lingeringSmoke,life:40,maxLife:40});
       const ring=new THREE.Mesh(explosionRingGeometry,new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
@@ -1423,11 +1425,21 @@ export default function Game() {
         }
       }
       for(let i=tracers.length-1;i>=0;i--){tracers[i].life-=dt;if(tracers[i].life<=0){scene.remove(tracers[i].line);tracers[i].line.geometry.dispose();(tracers[i].line.material as THREE.Material).dispose();tracers.splice(i,1);}}
+      const basePosition=new THREE.Vector3();
       for(let i=wrecks.length-1;i>=0;i--){
         const wreck=wrecks[i];wreck.life-=dt;const decay=THREE.MathUtils.clamp(wreck.life/wreck.maxLife,0,1);
         wreck.group.scale.set(1,.58,1).multiplyScalar(.72+.28*decay);(wreck.scorch.material as THREE.MeshBasicMaterial).opacity=.64*Math.min(1,decay*3);
-        for(const flame of wreck.flames){const readable=decay>.2,flicker=.88+.12*Math.sin(now*.011+(flame.userData.flamePhase as number));flame.visible=readable;flame.scale.set(readable?.95*flicker*(.45+.55*decay):0,readable?2.55*flicker*(.45+.55*decay):0,1);flame.material.rotation=Math.sin(now*.006+(flame.userData.flamePhase as number))*.14;(flame.material as THREE.SpriteMaterial).opacity=readable?.88*decay:0;}
-        for(const smoke of wreck.smoke){smoke.position.y+=dt*(.35+.5*decay);smoke.scale.setScalar((1.2+rng())*decay);(smoke.material as THREE.SpriteMaterial).opacity=.48*decay;}
+        for(const flame of wreck.flames){
+          const readable=decay>.2,phase=(flame.userData.effectPhase as number)*Math.PI*2,t=now*.001;
+          const turbulence=.9+.2*Math.sin(t*13+phase)+.13*Math.sin(t*23+phase*1.7),sizeDecay=.42+.58*decay;basePosition.copy(flame.userData.basePosition as THREE.Vector3);
+          flame.visible=readable;flame.position.set(basePosition.x+Math.sin(t*17+phase)*.18,basePosition.y+Math.abs(Math.sin(t*19+phase))*.28,basePosition.z+Math.cos(t*14+phase)*.12);
+          flame.scale.set(readable?1.32*turbulence*sizeDecay:0,readable?2.7*(.82+.25*Math.sin(t*21+phase))*sizeDecay:0,1);flame.material.rotation=Math.sin(t*11+phase)*.19;(flame.material as THREE.SpriteMaterial).opacity=readable?.9*decay:0;
+        }
+        for(const smoke of wreck.smoke){
+          const phase=smoke.userData.effectPhase as number,cycle=(now*.00019+phase)%1,offset=smoke.userData.baseOffset as THREE.Vector3;
+          smoke.position.set(wreck.group.position.x+offset.x+Math.sin(cycle*8+phase*11)*.65*cycle,1.05+cycle*6.8,wreck.group.position.z+offset.z+Math.cos(cycle*7+phase*9)*.5*cycle);
+          smoke.scale.setScalar((1.7+cycle*3.8)*(.5+.5*decay));(smoke.material as THREE.SpriteMaterial).opacity=.7*decay*Math.pow(1-cycle,.55);
+        }
         if(wreck.life<=0){scene.remove(wreck.group,wreck.scorch);wreck.scorch.geometry.dispose();(wreck.scorch.material as THREE.Material).dispose();for(const particle of [...wreck.flames,...wreck.smoke]){scene.remove(particle);(particle.material as THREE.Material).dispose();}wrecks.splice(i,1);}
       }
       // Inner ribbons twitch subtly while exposed outer parasites wriggle much more.

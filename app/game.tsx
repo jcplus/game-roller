@@ -3,8 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
-type Hud = { score: number; people: number; combo: number; size: number; time: number; destroyed: number };
-type Target = { mesh: THREE.Object3D; radius: number; baseRadius?: number; height?: number; value: number; kind: "person" | "fragment" | "car" | "tree" | "building"; minSize: number; alive: boolean };
+type Hud = { score: number; people: number; combo: number; size: number; time: number; destroyed: number; stamina: number; headlines: string[]; newsRevision: number };
+type Target = {
+  mesh: THREE.Object3D; radius: number; baseRadius?: number; height?: number; value: number;
+  kind: "person" | "fragment" | "car" | "tree" | "building"; minSize: number; alive: boolean; label?: string;
+  width?: number; depth?: number; damage?: number; lastImpact?: number; ruined?: boolean;
+};
 type Pedestrian = {
   target: Target;
   body: THREE.Group;
@@ -25,6 +29,32 @@ const palette = {
   brick: 0x7d4038, blue: 0x607c86, dark: 0x21242a, red: 0xaa3b30, yellow: 0xf1be3b,
 };
 
+function NewsTicker({headlines,revision}:{headlines:string[];revision:number}) {
+  const viewportRef=useRef<HTMLDivElement>(null),trackRef=useRef<HTMLDivElement>(null);
+  const latestRef=useRef(headlines);
+  useEffect(()=>{latestRef.current=[...headlines];},[headlines,revision]);
+  useEffect(()=>{
+    const viewport=viewportRef.current,track=trackRef.current;if(!viewport||!track)return;
+    let frame=0,last=performance.now(),offset=0,cursor=0;
+    const appendHeadline=()=>{
+      const available=latestRef.current.length?latestRef.current:["当地警方正在调查异常事件"];
+      const span=document.createElement("span");span.textContent=`${available[cursor++%available.length]} · `;track.appendChild(span);
+    };
+    while(track.scrollWidth<viewport.clientWidth+500)appendHeadline();
+    const animate=(now:number)=>{
+      offset-=(now-last)/1000*72;last=now;
+      const first=track.firstElementChild as HTMLElement|null;
+      if(first&&-offset>=first.offsetWidth){offset+=first.offsetWidth;first.remove();}
+      // Add only when the final headline is approaching the visible area. Old
+      // headlines are removed from the left, so the DOM remains strictly bounded.
+      if(offset+track.scrollWidth<viewport.clientWidth+360)appendHeadline();
+      track.style.transform=`translate3d(${offset}px,0,0)`;frame=requestAnimationFrame(animate);
+    };
+    frame=requestAnimationFrame(animate);return()=>cancelAnimationFrame(frame);
+  },[]);
+  return <div ref={viewportRef} className="ticker-viewport"><div ref={trackRef} className="ticker-track"/></div>;
+}
+
 function seeded(seed = 207906) {
   let s = seed >>> 0;
   return () => ((s = Math.imul(1664525, s) + 1013904223 >>> 0) / 4294967296);
@@ -34,7 +64,7 @@ export default function Game() {
   const mount = useRef<HTMLDivElement>(null);
   const [started, setStarted] = useState(false);
   const [ended, setEnded] = useState(false);
-  const [hud, setHud] = useState<Hud>({ score: 0, people: 0, combo: 1, size: 1, time: 90, destroyed: 0 });
+  const [hud, setHud] = useState<Hud>({ score: 0, people: 0, combo: 1, size: 1, time: 90, destroyed: 0, stamina: 100, headlines: ["当地警方正在调查异常事件"], newsRevision: 0 });
   const gameRef = useRef({ start: () => {}, restart: () => {} });
   const performanceRef = useRef<HTMLDivElement>(null);
 
@@ -47,7 +77,7 @@ export default function Game() {
     const camera = new THREE.PerspectiveCamera(38, host.clientWidth / host.clientHeight, 0.1, 600);
     camera.position.set(42, 56, 42);
     const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
     renderer.setSize(host.clientWidth, host.clientHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -99,7 +129,7 @@ export default function Game() {
     const hemi=new THREE.HemisphereLight(0xd8e0d7, 0x3f4840, 2.8);scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xffedcf, 3.7);
     sun.position.set(-50, 75, 35); sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024); sun.shadow.camera.left = sun.shadow.camera.bottom = -95; sun.shadow.camera.right = sun.shadow.camera.top = 95;
+    sun.shadow.mapSize.set(512, 512); sun.shadow.camera.left = sun.shadow.camera.bottom = -95; sun.shadow.camera.right = sun.shadow.camera.top = 95;
     // Prevent large ground triangles from self-shadowing differently across their diagonal.
     sun.shadow.bias=-0.00035;sun.shadow.normalBias=.065;sun.shadow.radius=1;
     scene.add(sun);
@@ -324,6 +354,8 @@ export default function Game() {
     const roofWear=seeded(64321);for(let i=0;i<240;i++){roofContext.fillStyle=roofWear()>.55?"rgba(72,61,45,.16)":"rgba(235,220,175,.14)";roofContext.fillRect(roofWear()*128,roofWear()*64,1+roofWear()*5,1+roofWear()*2);}
     const roofTexture=new THREE.CanvasTexture(roofCanvas);roofTexture.wrapS=roofTexture.wrapT=THREE.RepeatWrapping;roofTexture.repeat.set(5,2);roofTexture.colorSpace=THREE.SRGBColorSpace;
     const bridgeRoofMaterial=new THREE.MeshStandardMaterial({map:roofTexture,color:0xd0c5a4,roughness:.95});
+    type FootbridgeState={group:THREE.Group;hits:number;touching:boolean;collapsed:boolean;collapseAge:number;baseX:number;baseZ:number};
+    const footbridges:FootbridgeState[]=[];
     const addFootbridge=(x:number,z:number,rotation:number)=>{
       const bridge=new THREE.Group();bridge.position.set(x,0,z);bridge.rotation.y=rotation;scene.add(bridge);
       const steel=0x446b70,steelDark=0x294b52,floor=0x728b86;
@@ -367,6 +399,7 @@ export default function Game() {
         const lampMat=new THREE.MeshStandardMaterial({color:0xf3c56a,emissive:0xf0a72d,emissiveIntensity:1.4,roughness:.35});
         const lamp=new THREE.Mesh(sphereGeo,lampMat);lamp.position.set(px,8.25,0);lamp.scale.setScalar(.16);bridge.add(lamp);
       }
+      footbridges.push({group:bridge,hits:0,touching:false,collapsed:false,collapseAge:0,baseX:x,baseZ:z});
     };
     addFootbridge(-54,14,0);
     addFootbridge(14,54,Math.PI/2);
@@ -509,7 +542,7 @@ export default function Game() {
           column(x,1.35,d*.74,2.2,trim,.14);
           box(x,1.28,d*.78,Math.max(.65,w/arcade*.52),1.65,.11,windowGlow,g);
         }
-      }else{
+      }else if(style===3){
         // Low industrial fire-station/warehouse: sawtooth roof, roller doors,
         // exposed tanks and a narrow brick office tower.
         box(0,h*.32,0,w,h*.64,d,0x76594a,g);
@@ -529,8 +562,65 @@ export default function Game() {
         detail(new THREE.CylinderGeometry(.13,.18,2.8,8),0x303635,w*.13,h*.91,-d*.22);
         box(0,3.05,d*.65,w*.62,.72,.18,0xc29a48,g);
         box(0,3.05,d*.76,w*.49,.1,.08,0x242b2a,g);
+      }else if(style===4){
+        // Brick apartment with a fully supported central stair tower and balconies.
+        box(0,h*.48,0,w,h*.96,d,0x765446,g);
+        box(0,h*.98,0,w+.45,.38,d+.45,roofDark,g);
+        box(0,h*.52,d*.52,w*.26,h*.88,.48,0x4e413a,g);
+        const floors=Math.max(2,Math.floor(h/3)),bays=Math.max(3,Math.floor(w/2.5));
+        for(let floor=0;floor<floors;floor++){
+          const y=1.65+floor*(h*.78/Math.max(1,floors-1));
+          for(let i=0;i<bays;i++){
+            const x=-w*.4+i*w*.8/(bays-1);
+            box(x,y,d*.54,Math.min(1.05,w/bays*.6),1.25,.12,windowDark,g);
+            box(x,y,d*.62,.06,1.32,.06,trim,g);
+          }
+          box(0,y-.78,d*.72,w*.88,.14,.85,0x4a4d48,g);
+          box(0,y-.34,d*.98,w*.88,.08,.08,trim,g);
+          for(let x=-w*.43;x<=w*.43;x+=1.35)box(x,y-.02,d*.98,.07,.72,.07,trim,g);
+        }
+        box(0,1.35,d*.8,w*.14,2.7,.35,0x292523,g);
+        box(0,.22,d*.92,w*.36,.18,1.15,0x858078,g);
+        for(let z=-d*.34;z<=d*.34;z+=2)for(const side of [-1,1])box(side*w*.505,h*.5,z,.12,h*.5,1.05,windowDark,g);
+      }else{
+        // Setback office tower: every upper volume overlaps the floor below.
+        const tiers=3;
+        for(let tier=0;tier<tiers;tier++){
+          const tw=w*(1-tier*.14),td=d*(1-tier*.12),th=h/tiers+.18;
+          box(0,tier*h/tiers+th*.5,0,tw,th,td,[0x5d6865,0x69736e,0x535e5b][tier],g);
+          box(0,(tier+1)*h/tiers+.08,0,tw+.28,.18,td+.28,trim,g);
+          const windows=Math.max(3,Math.floor(tw/2.1));
+          for(let i=0;i<windows;i++){
+            const x=-tw*.4+i*tw*.8/(windows-1);
+            box(x,tier*h/tiers+th*.55,td*.505,.82,th*.58,.1,windowGlow,g);
+            box(x,tier*h/tiers+th*.55,-td*.505,.82,th*.58,.1,windowDark,g);
+          }
+        }
+        box(0,1.4,d*.54,w*.18,2.8,.3,0x242827,g);
+        box(0,.22,d*.7,w*.48,.18,1.2,0x858078,g);
+        const penthouse=box(0,h+.55,0,w*.34,1.1,d*.34,0x414947,g);
+        penthouse.position.y=h+.55;
+        detail(new THREE.CylinderGeometry(.1,.1,2.5,8),0x343a39,0,h+2.3,0);
+      }
+      // Architectural detail is authored from many small primitives. Collapse
+      // equal-material pieces into a handful of meshes so shadows and the main
+      // pass do not issue thousands of draw calls every frame.
+      const batches=new Map<string,{geometry:THREE.BufferGeometry;material:THREE.Material;matrices:THREE.Matrix4[]}>();
+      for(const child of [...g.children]){
+        if(!(child instanceof THREE.Mesh)||Array.isArray(child.material))continue;
+        child.updateMatrix();
+        const key=`${child.geometry.uuid}:${child.material.uuid}`;
+        const batch=batches.get(key)??{geometry:child.geometry,material:child.material,matrices:[]};
+        batch.matrices.push(child.matrix.clone());batches.set(key,batch);
+        g.remove(child);
+      }
+      for(const {geometry,material,matrices} of batches.values()){
+        const mesh=new THREE.InstancedMesh(geometry,material,matrices.length);
+        for(let i=0;i<matrices.length;i++)mesh.setMatrixAt(i,matrices[i]);
+        mesh.instanceMatrix.needsUpdate=true;mesh.castShadow=mesh.receiveShadow=true;g.add(mesh);
       }
     };
+    const buildingNames=["市政档案馆","中央百货","河畔公寓","老城酒店","联合银行","消防器材厂","城市剧院","晨星写字楼","电报大楼","南区仓库","胜利公寓","交通管理局"];
     let blockIndex=0;
     for (const bx of blocks) for (const bz of blocks) {
       const surface=new THREE.Mesh(boxGeo,grassMaterial);surface.position.set(bx,.08,bz);surface.scale.set(38,.18,38);surface.receiveShadow=true;scene.add(surface);
@@ -555,10 +645,11 @@ export default function Game() {
         const areaFactor=Math.sqrt(parcel.w*parcel.d)/12,h=6+Math.floor((areaFactor+rng()*2.4))*3;
         const x=bx+parcel.x+(rng()-.5)*Math.max(0,parcel.w-w-3),z=bz+parcel.z+(rng()-.5)*Math.max(0,parcel.d-d-3);
         const g=new THREE.Group();g.position.set(x,0,z);scene.add(g);
-        addReferenceBuilding(g,w,h,d,(buildings.length+blockIndex)%4);
+        addReferenceBuilding(g,w,h,d,(buildings.length+blockIndex)%6);
         // Short path from the building entrance to the parcel pedestrian network.
         box(x,.21,z+d/2+Math.max(1,(parcel.d-d)*.2),2,.1,Math.max(2,parcel.d-d),palette.concrete);
-        buildings.push(g);targets.push({mesh:g,radius:Math.max(w,d)*.55,height:h,value:Math.round(h*w*d*4),kind:"building",minSize:3+h*.055,alive:true});
+        const buildingLabel=buildingNames[buildings.length%buildingNames.length];
+        buildings.push(g);targets.push({mesh:g,radius:Math.max(w,d)*.55,width:w,depth:d,height:h,value:Math.round(h*w*d*4),kind:"building",minSize:3+h*.055,alive:true,label:buildingLabel,damage:0,lastImpact:0,ruined:false});
         const openX=bx+parcel.x+(parcel.x<=0?-1:1)*parcel.w*.38,openZ=bz+parcel.z+(parcel.z<=0?-1:1)*parcel.d*.37;
         if(Math.abs(openX-x)>w*.35||Math.abs(openZ-z)>d*.35)plannedTreePositions.push({x:openX,z:openZ});
         if(parcel.w*parcel.d>650)plannedTreePositions.push({x:bx+parcel.x-parcel.w*.32,z:bz+parcel.z+parcel.d*.34});
@@ -575,7 +666,9 @@ export default function Game() {
     const lampBeamGeometry=new THREE.ConeGeometry(4.8,5.3,16,1,true);
     const lampBeams:THREE.Mesh[]=[];
     const lampPools:THREE.PointLight[]=[];
-    const lampFixtures:{position:THREE.Vector3;beam:THREE.Mesh;groundPool:THREE.Mesh}[]=[];
+    type StreetFixture={group:THREE.Group;kind:"lamp"|"fence"|"power"|"billboard";radius:number;alive:boolean;fallAxis:THREE.Vector3;fallAngle:number;fallSpeed:number;impactDone:boolean};
+    const streetFixtures:StreetFixture[]=[];
+    const lampFixtures:{position:THREE.Vector3;beam:THREE.Mesh;groundPool:THREE.Mesh;fixture:StreetFixture}[]=[];
     const lampPoolCanvas=document.createElement("canvas");lampPoolCanvas.width=lampPoolCanvas.height=128;
     const lampPoolContext=lampPoolCanvas.getContext("2d")!;
     const lampPoolGradient=lampPoolContext.createRadialGradient(64,64,0,64,64,64);
@@ -586,8 +679,9 @@ export default function Game() {
     lampPoolContext.fillStyle=lampPoolGradient;lampPoolContext.fillRect(0,0,128,128);
     const lampPoolTexture=new THREE.CanvasTexture(lampPoolCanvas);lampPoolTexture.colorSpace=THREE.SRGBColorSpace;
     const lampPoolMaterial=new THREE.MeshBasicMaterial({map:lampPoolTexture,color:0xffd083,transparent:true,opacity:0,depthWrite:false,blending:THREE.AdditiveBlending});
-    const addStreetLamp=(x:number,z:number,vertical:boolean,side:number,index:number)=>{
+    const addStreetLamp=(x:number,z:number,vertical:boolean,side:number)=>{
       const g=new THREE.Group();g.position.set(x,0,z);scene.add(g);
+      const fixture:StreetFixture={group:g,kind:"lamp",radius:.55,alive:true,fallAxis:new THREE.Vector3(),fallAngle:0,fallSpeed:0,impactDone:false};streetFixtures.push(fixture);
       box(0,2.9,0,.15,5.8,.15,lampMetal,g);
       const toward=side<0?1:-1;
       let headX=0,headZ=0;
@@ -606,17 +700,16 @@ export default function Game() {
       beam.position.set(headX,2.88,headZ);beam.renderOrder=1;g.add(beam);lampBeams.push(beam);
       const groundPool=new THREE.Mesh(new THREE.PlaneGeometry(10.5,10.5),lampPoolMaterial);
       groundPool.rotation.x=-Math.PI/2;groundPool.position.set(headX,.185,headZ);groundPool.renderOrder=1;g.add(groundPool);
-      lampFixtures.push({position:new THREE.Vector3(x+headX,.8,z+headZ),beam,groundPool});
+      lampFixtures.push({position:new THREE.Vector3(x+headX,.8,z+headZ),beam,groundPool,fixture});
     };
-    let lampIndex=0;
     for(const road of verticalRoads)for(const side of [-1,1])for(let along=-72;along<=72;along+=18){
       // Skip the centres of crossing roads so poles never stand in crosswalks.
       if(horizontalRoads.some(crossing=>Math.abs(along-crossing.at)<crossing.width/2+2))continue;
-      addStreetLamp(road.at+side*(road.width/2+1.25),along,true,side,lampIndex++);
+      addStreetLamp(road.at+side*(road.width/2+1.25),along,true,side);
     }
     for(const road of horizontalRoads)for(const side of [-1,1])for(let along=-72;along<=72;along+=18){
       if(verticalRoads.some(crossing=>Math.abs(along-crossing.at)<crossing.width/2+2))continue;
-      addStreetLamp(along,road.at+side*(road.width/2+1.25),false,side,lampIndex++);
+      addStreetLamp(along,road.at+side*(road.width/2+1.25),false,side);
     }
     // Dozens of simultaneous point lights make WebGL compile and evaluate every
     // surface against every light. Six pooled lights follow the nearest fixtures;
@@ -629,6 +722,7 @@ export default function Game() {
     // gaps opposite paths and building entrances.
     const addFenceRun=(x:number,z:number,length:number,vertical:boolean)=>{
       const group=new THREE.Group();group.position.set(x,0,z);scene.add(group);
+      streetFixtures.push({group,kind:"fence",radius:length*.5,alive:true,fallAxis:new THREE.Vector3(),fallAngle:0,fallSpeed:0,impactDone:false});
       const segments=Math.max(2,Math.round(length/2.25)),step=length/segments;
       for(let i=0;i<=segments;i++){
         const p=-length/2+i*step;
@@ -647,6 +741,42 @@ export default function Game() {
       }
     }
 
+    // Utility poles follow one curb of each street in continuous runs, matching
+    // the reference: regular spacing, crossarms parallel to the road and sagging
+    // cables that stop at intersections.
+    type PowerWire={line:THREE.Line;a:StreetFixture;b:StreetFixture;offset:THREE.Vector3};
+    const powerWires:PowerWire[]=[];
+    const addPowerRun=(vertical:boolean,road:number,side:number)=>{
+      let previous:StreetFixture|undefined;
+      for(let along=-72;along<=72;along+=18){
+        const crossings=vertical?horizontalRoads:verticalRoads;
+        if(crossings.some(crossing=>Math.abs(along-crossing.at)<crossing.width/2+2)){previous=undefined;continue;}
+        const x=vertical?road+side:along,z=vertical?along:road+side;
+        const group=new THREE.Group();group.position.set(x,0,z);scene.add(group);
+        const pole=box(0,3.35,0,.22,6.7,.22,0x49372a,group);pole.castShadow=true;
+        box(vertical?0:1.15,6.25,vertical?1.15:0,vertical?2.3:.14,.14,vertical?.14:2.3,0x3b3028,group);
+        for(const offset of [-.86,0,.86]){
+          const insulator=new THREE.Mesh(cylGeo,mat(0x8d9a8e));insulator.scale.set(.1,.16,.1);
+          insulator.position.set(vertical?0:offset,6.48,vertical?offset:0);group.add(insulator);
+        }
+        const fixture:StreetFixture={group,kind:"power",radius:.7,alive:true,fallAxis:new THREE.Vector3(),fallAngle:0,fallSpeed:0,impactDone:false};
+        streetFixtures.push(fixture);
+        if(previous){
+          for(const offset of [-.86,0,.86]){
+            const wireOffset=new THREE.Vector3(vertical?0:offset,0,vertical?offset:0);
+            const material=new THREE.LineBasicMaterial({color:0x171b1b});
+            const start=previous.group.position.clone().add(wireOffset).setY(6.45),end=group.position.clone().add(wireOffset).setY(6.45);
+            const mid=start.clone().lerp(end,.5);mid.y-=.42;
+            const geometry=new THREE.BufferGeometry().setFromPoints([start,mid,end]);
+            const line=new THREE.Line(geometry,material);scene.add(line);powerWires.push({line,a:previous,b:fixture,offset:wireOffset});
+          }
+        }
+        previous=fixture;
+      }
+    };
+    for(const road of verticalRoads)addPowerRun(true,road.at,road.width/2+2.35);
+    for(const road of horizontalRoads)addPowerRun(false,road.at,-road.width/2-2.35);
+
     const billboardColors=[["#d7b646","#672926"],["#80a9a3","#192e38"],["#c9c5a4","#3d5039"],["#bb5a3c","#e3c474"]];
     const addBillboard=(x:number,z:number,rotation:number,label:string,index:number)=>{
       const canvas=document.createElement("canvas");canvas.width=256;canvas.height=112;const context=canvas.getContext("2d")!;
@@ -661,6 +791,7 @@ export default function Game() {
       const board=new THREE.Mesh(new THREE.PlaneGeometry(6.8,3),new THREE.MeshStandardMaterial({map:texture,roughness:.9,side:THREE.DoubleSide}));
       board.position.set(0,4.2,0);board.castShadow=true;group.add(board);
       box(0,4.2,-.1,7,3.2,.14,0x333b39,group);
+      streetFixtures.push({group,kind:"billboard",radius:3.7,alive:true,fallAxis:new THREE.Vector3(),fallAngle:0,fallSpeed:0,impactDone:false});
     };
     addBillboard(-42,-11,0,"NIGHT DRIVE",0);addBillboard(41,11,Math.PI,"MEAT MARKET",1);
     addBillboard(-11,39,Math.PI/2,"STAY ALERT",2);addBillboard(11,-41,-Math.PI/2,"FIRE SAFE",3);
@@ -930,7 +1061,8 @@ export default function Game() {
 
     const player=new THREE.Group(); scene.add(player);
     const wormMass=new THREE.Group(); player.add(wormMass);
-    const wormColors=[0x651a1b,0x7b2220,0x8f2d25,0x4d1016,0x9c382a];
+    // Keep the creature readable against the city during the dark final quarter.
+    const wormColors=[0x87383a,0x98433f,0xac5046,0x742b32,0xb65a49];
     const parasiteStrands:{mesh:THREE.Mesh;phase:number;amplitude:number}[]=[];
     const makeRibbon=(curve:THREE.CatmullRomCurve3,width:number,color:number,samples=26)=>{
       const positions:number[]=[], uvs:number[]=[], indices:number[]=[];
@@ -948,7 +1080,7 @@ export default function Game() {
       geometry.setAttribute("position",new THREE.Float32BufferAttribute(positions,3));
       geometry.setAttribute("uv",new THREE.Float32BufferAttribute(uvs,2));
       geometry.setIndex(indices); geometry.computeVertexNormals();
-      const material=new THREE.MeshStandardMaterial({map:meatTexture,roughnessMap:meatTexture,bumpMap:meatTexture,bumpScale:.16,color:new THREE.Color(color).lerp(new THREE.Color(0xffffff),.35),roughness:.92,metalness:0,emissive:0x210204,emissiveIntensity:.08,flatShading:true,side:THREE.DoubleSide});
+      const material=new THREE.MeshStandardMaterial({map:meatTexture,roughnessMap:meatTexture,bumpMap:meatTexture,bumpScale:.16,color:new THREE.Color(color).lerp(new THREE.Color(0xffffff),.42),roughness:.92,metalness:0,emissive:0x3b0b0d,emissiveIntensity:.14,flatShading:true,side:THREE.DoubleSide});
       const ribbon=new THREE.Mesh(geometry,material); ribbon.castShadow=true;
       ribbon.userData.baseRibbonPositions=new Float32Array(positions);
       return ribbon;
@@ -991,7 +1123,7 @@ export default function Game() {
       for(let j=0;j<=segments;j++){uvs[j*4]=0;uvs[j*4+1]=j/2;uvs[j*4+2]=1;uvs[j*4+3]=j/2;}
       for(let j=0;j<segments;j++){const n=j*2;indices.push(n,n+2,n+1,n+1,n+2,n+3);}
       const geometry=new THREE.BufferGeometry(); geometry.setAttribute("position",new THREE.BufferAttribute(positions,3));geometry.setAttribute("uv",new THREE.BufferAttribute(uvs,2)); geometry.setIndex(indices);
-      const material=new THREE.MeshStandardMaterial({map:meatTexture,roughnessMap:meatTexture,bumpMap:meatTexture,bumpScale:.18,color:new THREE.Color(wormColors[(i+1)%wormColors.length]).lerp(new THREE.Color(0xffffff),.35),roughness:.94,emissive:0x210204,emissiveIntensity:.08,flatShading:true,side:THREE.DoubleSide});
+      const material=new THREE.MeshStandardMaterial({map:meatTexture,roughnessMap:meatTexture,bumpMap:meatTexture,bumpScale:.18,color:new THREE.Color(wormColors[(i+1)%wormColors.length]).lerp(new THREE.Color(0xffffff),.42),roughness:.94,emissive:0x3b0b0d,emissiveIntensity:.14,flatShading:true,side:THREE.DoubleSide});
       const mesh=new THREE.Mesh(geometry,material); mesh.castShadow=true; wormMass.add(mesh);
       const z=1-2*(i+.5)/10,a=i*2.399963+rng()*.4,direction=new THREE.Vector3(Math.cos(a)*Math.sqrt(1-z*z),z,Math.sin(a)*Math.sqrt(1-z*z)).normalize();
       const side=new THREE.Vector3().crossVectors(direction,Math.abs(direction.y)<.8?new THREE.Vector3(0,1,0):new THREE.Vector3(1,0,0)).normalize();
@@ -1000,9 +1132,11 @@ export default function Game() {
     player.position.set(-54,1.1,-70);
     const shadow=new THREE.Mesh(new THREE.CircleGeometry(2,24),new THREE.MeshBasicMaterial({color:0x1b0d0b,transparent:true,opacity:.35,depthWrite:false})); shadow.rotation.x=-Math.PI/2; shadow.position.y=-1; player.add(shadow);
 
-    type Responder={mesh:THREE.Group;target:Target;kind:"police"|"swat"|"firefighter";source:VehicleAgent;side:number;cooldown:number;ammo:number;maxAmmo:number;reloadUntil:number;reloadDuration:number;weapon?:THREE.Group;rightArm?:THREE.Group;leftArm?:THREE.Group;hose?:THREE.Line};
+    type Responder={mesh:THREE.Group;target:Target;kind:"police"|"swat"|"firefighter";source:VehicleAgent;side:number;cooldown:number;ammo:number;maxAmmo:number;reloadUntil:number;reloadDuration:number;deployedAt:number;retired?:boolean;assignedFire?:Wreck;weapon?:THREE.Group;rightArm?:THREE.Group;leftArm?:THREE.Group;hose?:THREE.Mesh;nozzle?:THREE.Group;waterJet?:THREE.Mesh;waterSpray?:THREE.Sprite};
     type Wreck={group:THREE.Group;scorch:THREE.Mesh;flames:THREE.Sprite[];smoke:THREE.Sprite[];life:number;maxLife:number};
     const responders:Responder[]=[],wrecks:Wreck[]=[],tracers:{line:THREE.Line;life:number}[]=[],skidMarks:{mesh:THREE.Mesh;born:number}[]=[],evacuees:{mesh:THREE.Group;direction:THREE.Vector3;gait:number}[]=[];
+    const steamClouds:{sprite:THREE.Sprite;velocity:THREE.Vector3;life:number;maxLife:number}[]=[];
+    const FIRE_TRUCK_PARK_RANGE=13,MAX_HOSE_LENGTH=16;
     let nextPoliceDispatch=4500,nextFireDispatch=7000;
     const spawnPerson=(vehicle:VehicleAgent,kind:Responder["kind"],side:number)=>{
       const g=new THREE.Group();g.position.copy(vehicle.mesh.position).add(new THREE.Vector3(0,0,side*1.5));scene.add(g);
@@ -1016,7 +1150,8 @@ export default function Game() {
       }
       const target:Target={mesh:g,radius:.45,height:1.85,value:kind==="swat"?1800:1200,kind:"person",minSize:.72,alive:true};targets.push(target);
       const maxAmmo=kind==="swat"?30:kind==="police"?12:0;
-      const responder:Responder={mesh:g,target,kind,source:vehicle,side,cooldown:rng(),ammo:maxAmmo,maxAmmo,reloadUntil:0,reloadDuration:kind==="swat"?2100:1500};
+      const assignedFire=kind==="firefighter"?wrecks.filter(w=>w.life>0).sort((a,b)=>a.group.position.distanceToSquared(vehicle.mesh.position)-b.group.position.distanceToSquared(vehicle.mesh.position))[0]:undefined;
+      const responder:Responder={mesh:g,target,kind,source:vehicle,side,cooldown:rng(),ammo:maxAmmo,maxAmmo,reloadUntil:0,reloadDuration:kind==="swat"?2100:1500,deployedAt:performance.now(),assignedFire};
       if(kind!=="firefighter"){
         const rightArm=new THREE.Group(),leftArm=new THREE.Group(),weapon=new THREE.Group();rightArm.position.set(-.27,1.22,0);leftArm.position.set(.27,1.22,0);g.add(rightArm,leftArm,weapon);
         box(0,-.24,.12,.13,.54,.14,kind==="swat"?0x0c0f10:0x294c68,rightArm);box(0,-.24,.12,.13,.54,.14,kind==="swat"?0x0c0f10:0x294c68,leftArm);
@@ -1025,8 +1160,17 @@ export default function Game() {
         rightArm.rotation.x=-1.05;leftArm.rotation.x=-.9;responder.weapon=weapon;responder.rightArm=rightArm;responder.leftArm=leftArm;
       }
       if(kind==="firefighter"){
-        const geometry=new THREE.BufferGeometry().setFromPoints([vehicle.mesh.position.clone(),g.position.clone()]);
-        const hose=new THREE.Line(geometry,new THREE.LineBasicMaterial({color:0x342d22}));scene.add(hose);responder.hose=hose;
+        const rightArm=new THREE.Group(),leftArm=new THREE.Group();rightArm.position.set(-.3,1.25,0);leftArm.position.set(.3,1.25,0);g.add(rightArm,leftArm);
+        box(0,-.24,.13,.13,.54,.14,0xd7a52b,rightArm);box(0,-.24,.13,.13,.54,.14,0xd7a52b,leftArm);
+        rightArm.rotation.x=-1.05;leftArm.rotation.x=-.9;
+        const nozzle=new THREE.Group();nozzle.position.set(0,1.08,-.42);g.add(nozzle);
+        box(0,0,0,.12,.12,.55,0xd8c05d,nozzle);box(0,0,-.34,.18,.16,.18,0x6d7775,nozzle);
+        const hose=new THREE.Mesh(new THREE.CylinderGeometry(.09,.09,1,8),new THREE.MeshStandardMaterial({color:0x342d22,roughness:1}));
+        const waterJet=new THREE.Mesh(new THREE.CylinderGeometry(.34,.055,1,9),new THREE.MeshBasicMaterial({color:0xaeeaff,transparent:true,opacity:.58,depthWrite:false,blending:THREE.AdditiveBlending}));
+        waterJet.visible=false;scene.add(hose,waterJet);
+        const sprayMaterial=new THREE.SpriteMaterial({map:glowTexture,color:0xc9f3ff,transparent:true,opacity:.62,depthWrite:false,blending:THREE.AdditiveBlending});
+        const waterSpray=new THREE.Sprite(sprayMaterial);waterSpray.visible=false;waterSpray.scale.set(2.2,2.2,1);scene.add(waterSpray);
+        responder.hose=hose;responder.nozzle=nozzle;responder.waterJet=waterJet;responder.waterSpray=waterSpray;
       }
       responders.push(responder);
     };
@@ -1054,9 +1198,17 @@ export default function Game() {
 
     const BASE_RADIUS=1.38;
     const velocity=new THREE.Vector3();
-    const keys=new Set<string>(); let active=false, finished=false, startAt=0, last=performance.now(), score=0, people=0, combo=1, destroyed=0, radius=BASE_RADIUS, comboAt=0;
+    const STAMINA_MAX=100,STAMINA_REGEN_PER_SECOND=16,STAMINA_SPRINT_COST_PER_SECOND=40;
+    const keys=new Set<string>(); let active=false, finished=false, startAt=0, last=performance.now(), score=0, people=0, combo=1, destroyed=0, carsDestroyed=0, radius=BASE_RADIUS, comboAt=0, stamina=STAMINA_MAX, sprintExhausted=false;
+    const headlines=["当地警方正在调查异常事件"];let newsRevision=0;
+    const reportNews=(message:string)=>{headlines.push(message);if(headlines.length>8)headlines.shift();newsRevision++;};
     let cameraYaw=-Math.PI*3/4, dragging=false, dragX=0;camera.position.set(player.position.x+Math.sin(cameraYaw)*54,48,player.position.z+Math.cos(cameraYaw)*54);camera.lookAt(player.position);
     const debris:{mesh:THREE.Mesh;vel:THREE.Vector3;spin:THREE.Vector3;life:number;bloody?:boolean;lastTrail?:THREE.Vector3}[]=[];
+    type BuildingRuin={
+      target:Target; age:number; baseX:number; baseZ:number; sinkDepth:number; tiltX:number; tiltZ:number;
+      flames:THREE.Sprite[]; smoke:THREE.Sprite[];
+    };
+    const buildingRuins:BuildingRuin[]=[];
     const explosions:{
       sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean}[];
       sparks:{mesh:THREE.Mesh;velocity:THREE.Vector3;age:number;life:number}[];
@@ -1090,7 +1242,45 @@ export default function Game() {
     renderer.domElement.addEventListener("pointerup",onPointerUp);
     renderer.domElement.addEventListener("pointercancel",onPointerUp);
 
-    const shatter=(t:Target)=>{ const p=t.mesh.position.clone(); for(let i=0;i<Math.min(12,5+Math.floor(t.radius));i++){ const m=new THREE.Mesh(boxGeo,mat(i%3===0?0x3a3b39:0x77746b)); const s=.3+rng()*.65;m.scale.set(s,s*.7,s);m.position.copy(p).add(new THREE.Vector3((rng()-.5)*t.radius,1+rng()*3,(rng()-.5)*t.radius));scene.add(m);debris.push({mesh:m,vel:new THREE.Vector3((rng()-.5)*8,3+rng()*6,(rng()-.5)*8),spin:new THREE.Vector3((rng()-.5)*8,(rng()-.5)*8,(rng()-.5)*8),life:2+rng()}); } };
+    const addBuildingCracks=(t:Target,level:number)=>{
+      const w=t.width??t.radius*1.5,d=t.depth??t.radius*1.5,h=t.height??12;
+      const crackMaterial=new THREE.MeshBasicMaterial({color:0x171614,depthWrite:true,polygonOffset:true,polygonOffsetFactor:-2});
+      const segments=level===1?4:7;
+      for(let i=0;i<segments;i++){
+        const front=i%2===0,side=i%3===0,mesh=new THREE.Mesh(boxGeo,crackMaterial);
+        const y=h*(.2+rng()*.62),length=.55+rng()*1.25;
+        if(front){
+          mesh.scale.set(.07,length,.045);mesh.position.set((rng()-.5)*w*.7,y,(side?-1:1)*(d*.5+.09));mesh.rotation.z=(rng()-.5)*1.15;
+        }else{
+          mesh.scale.set(.045,length,.07);mesh.position.set((side?-1:1)*(w*.5+.09),y,(rng()-.5)*d*.7);mesh.rotation.x=(rng()-.5)*1.15;
+        }
+        t.mesh.add(mesh);
+      }
+    };
+    const collapseBuilding=(t:Target)=>{
+      if(t.ruined)return;
+      t.ruined=true;destroyed++;score+=Math.round(t.value*combo);combo=Math.min(99,combo+1);comboAt=performance.now();
+      reportNews(`突发：${t.label??"一栋建筑"}发生倾斜并向地下沉降`);
+      const w=t.width??t.radius*1.4,d=t.depth??t.radius*1.4,h=t.height??12,p=t.mesh.position;
+      const flames:THREE.Sprite[]=[],smoke:THREE.Sprite[]=[];
+      for(let i=0;i<12;i++){
+        const isSmoke=i>=7,sprite=new THREE.Sprite((isSmoke?explosionSmokeBases[i%3]:flameSliceBases[i%3]).clone());
+        sprite.position.set(p.x+(rng()-.5)*w*.7,.3+rng()*.65,p.z+(rng()-.5)*d*.7);
+        sprite.userData.effectPhase=rng();sprite.userData.basePosition=sprite.position.clone();
+        sprite.scale.setScalar(isSmoke?1.8+rng()*1.3:.8+rng()*.7);scene.add(sprite);
+        (isSmoke?smoke:flames).push(sprite);
+      }
+      const bounds=new THREE.Box3().setFromObject(t.mesh),visualHeight=Math.max(h,bounds.max.y-bounds.min.y);
+      buildingRuins.push({target:t,age:0,baseX:p.x,baseZ:p.z,sinkDepth:visualHeight*.95,tiltX:(rng()-.5)*.09,tiltZ:(rng()-.5)*.09,flames,smoke});
+    };
+    const damageBuilding=(t:Target,now:number)=>{
+      if(t.ruined||now-(t.lastImpact??0)<450)return;
+      t.lastImpact=now;t.damage=(t.damage??0)+1;
+      if(t.damage<3){
+        addBuildingCracks(t,t.damage);
+        reportNews(t.damage===1?`${t.label??"建筑"}外墙出现裂缝`:`${t.label??"建筑"}裂缝正在迅速扩大`);
+      }else collapseBuilding(t);
+    };
     const growParasiteMass=(consumed:number)=>{
       // Each consumed organism adds a new independently wound parasite to the outer shell.
       const normal=new THREE.Vector3(rng()-.5,rng()-.5,rng()-.5).normalize();
@@ -1118,6 +1308,7 @@ export default function Game() {
       }
     };
     const explodeCar=(car:Target)=>{
+      carsDestroyed++;reportNews(`现场车辆损毁数量已上升至 ${carsDestroyed} 辆`);
       const position=car.mesh.position.clone();position.y=.65;
       const sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean}[]=[];
       const sparks:{mesh:THREE.Mesh;velocity:THREE.Vector3;age:number;life:number}[]=[];
@@ -1148,7 +1339,7 @@ export default function Game() {
       }
       // Soft, asymmetric burn stain: deliberately neither a circle nor a rectangle.
       const scorchShape=new THREE.Shape();
-      for(let i=0;i<18;i++){const a=i/18*Math.PI*2,r=(i%3===0?.72:1)*(2.3+rng()*.85),x=Math.cos(a)*r*1.35,y=Math.sin(a)*r*.72;i?scorchShape.lineTo(x,y):scorchShape.moveTo(x,y);}
+      for(let i=0;i<18;i++){const a=i/18*Math.PI*2,r=(i%3===0?.72:1)*(2.3+rng()*.85),x=Math.cos(a)*r*1.35,y=Math.sin(a)*r*.72;if(i)scorchShape.lineTo(x,y);else scorchShape.moveTo(x,y);}
       scorchShape.closePath();
       const scorch=new THREE.Mesh(new THREE.ShapeGeometry(scorchShape),new THREE.MeshBasicMaterial({color:0x100e0c,transparent:true,opacity:.64,depthWrite:false}));
       scorch.rotation.x=-Math.PI/2;scorch.rotation.z=rng()*Math.PI;scorch.position.set(position.x,.18,position.z);scene.add(scorch);
@@ -1186,10 +1377,57 @@ export default function Game() {
       const smoke=new THREE.Sprite(smokeMaterial),flame=new THREE.Sprite(flameMaterial);const localImpact=impact.clone().sub(agent.mesh.position).setY(.55);
       smoke.position.copy(localImpact);flame.position.copy(localImpact);smoke.scale.setScalar(.25);flame.scale.setScalar(.08);agent.mesh.add(smoke,flame);agent.crash={age:0,smoke,flame};
     };
-    const collect=(t:Target)=>{ t.alive=false; score+=Math.round(t.value*combo); combo=Math.min(99,combo+1); comboAt=performance.now(); if(t.kind==="person"){people++;growParasiteMass(people);}if(t.kind==="car")explodeCar(t);if(t.kind==="building"){destroyed++;shatter(t);t.mesh.scale.y=.08;t.mesh.position.y=-.5;}else{scene.remove(t.mesh);} if(t.kind==="person")radius=Math.min(6.8,radius+.038); };
+    const electricalSparks:{mesh:THREE.Mesh;velocity:THREE.Vector3;life:number;maxLife:number}[]=[];
+    const electricalFires:{sprites:THREE.Sprite[];life:number;maxLife:number}[]=[];
+    const knockFixture=(fixture:StreetFixture,impactFrom:THREE.Vector3)=>{
+      if(!fixture.alive)return;fixture.alive=false;fixture.fallSpeed=fixture.kind==="fence"?4.8:2.7;
+      const away=fixture.group.position.clone().sub(impactFrom).setY(0);
+      if(!away.lengthSq())away.set(rng()-.5,0,rng()-.5);
+      away.normalize();fixture.fallAxis.set(away.z,0,-away.x).normalize();
+      if(fixture.kind==="lamp"){
+        const lamp=lampFixtures.find(item=>item.fixture===fixture);if(lamp){lamp.beam.visible=false;lamp.groundPool.visible=false;}
+      }
+    };
+    const pointToSegmentDistance=(point:THREE.Vector3,a:THREE.Vector3,b:THREE.Vector3)=>{
+      const ab=b.clone().sub(a),lengthSq=ab.lengthSq();
+      const t=lengthSq?THREE.MathUtils.clamp(point.clone().sub(a).dot(ab)/lengthSq,0,1):0;
+      return point.distanceTo(a.clone().addScaledVector(ab,t));
+    };
+    const powerPoleImpact=(fixture:StreetFixture)=>{
+      const impact=fixture.group.position.clone().add(new THREE.Vector3(0,.25,0));
+      reportNews("现场电线杆倒塌，供电线路发生故障");
+      for(let i=0;i<24;i++){
+        const mesh=new THREE.Mesh(explosionSparkGeometry,new THREE.MeshBasicMaterial({color:0xaeeeff,transparent:true,blending:THREE.AdditiveBlending}));mesh.position.copy(impact);mesh.scale.z=.5+rng();scene.add(mesh);
+        const velocity=new THREE.Vector3(rng()-.5,.18+rng(),rng()-.5).normalize().multiplyScalar(3+rng()*8);
+        electricalSparks.push({mesh,velocity,life:.35+rng()*.65,maxLife:1});
+      }
+      if(rng()>=.5)return;
+      reportNews("快讯：坠落电线引发短路起火");
+      const connected=powerWires.filter(wire=>wire.a===fixture||wire.b===fixture);
+      const fireSprites:THREE.Sprite[]=[];
+      for(const wire of connected){
+        const a=wire.a.group.localToWorld(new THREE.Vector3().copy(wire.offset).setY(6.45));
+        const b=wire.b.group.localToWorld(new THREE.Vector3().copy(wire.offset).setY(6.45));
+        const firePosition=a.clone().lerp(b,.5).setY(.55);
+        for(let i=0;i<3;i++){
+          const sprite=new THREE.Sprite(flameSliceBases[i].clone());sprite.position.copy(firePosition).add(new THREE.Vector3((rng()-.5)*1.1,.25+rng()*.45,(rng()-.5)*1.1));sprite.scale.set(.8+rng()*.45,1.6+rng(),1);scene.add(sprite);fireSprites.push(sprite);
+        }
+        for(const vehicle of vehicleAgents){
+          if(vehicle.state!=="crashed"&&pointToSegmentDistance(vehicle.mesh.position,a,b)<2.5)igniteCrash(vehicle,vehicle.mesh.position.clone());
+        }
+      }
+      if(fireSprites.length)electricalFires.push({sprites:fireSprites,life:5,maxLife:5});
+    };
+    const collect=(t:Target)=>{
+      if(t.kind==="building"){collapseBuilding(t);return;}
+      t.alive=false;score+=Math.round(t.value*combo);combo=Math.min(99,combo+1);comboAt=performance.now();
+      if(t.kind==="person"){people++;growParasiteMass(people);radius=Math.min(6.8,radius+.038);reportNews(`确认丧命群众已上升至 ${people} 人`);}
+      if(t.kind==="car")explodeCar(t);
+      scene.remove(t.mesh);
+    };
     const crushPerson=(t:Target,impactDirection:THREE.Vector3,impactForce:number)=>{
       if(!t.alive)return;t.alive=false;const position=t.mesh.position.clone();scene.remove(t.mesh);
-      score+=Math.round(t.value*combo);combo=Math.min(99,combo+1);comboAt=performance.now();people++;growParasiteMass(people);radius=Math.min(6.8,radius+.038);
+      score+=Math.round(t.value*combo);combo=Math.min(99,combo+1);comboAt=performance.now();people++;growParasiteMass(people);radius=Math.min(6.8,radius+.038);reportNews(`确认丧命群众已上升至 ${people} 人`);
       impactDirection.y=0;if(!impactDirection.lengthSq())impactDirection.set(1,0,0);impactDirection.normalize();
       const lateral=new THREE.Vector3(-impactDirection.z,0,impactDirection.x);
       const fragmentCount=5+Math.floor(rng()*6);
@@ -1248,9 +1486,15 @@ export default function Game() {
     renderer.compile(scene,camera);
     scene.remove(explosionWarmup);
     gameRef.current={start:()=>{active=true;finished=false;startAt=performance.now();setStarted(true);},restart};
-    let performanceFrames=0,performanceSampleAt=performance.now(),lampCullAt=0;
+    let performanceFrames=0,performanceSampleAt=performance.now(),lampCullAt=0,lastRenderedAt=0;
     const viewProjection=new THREE.Matrix4(),viewFrustum=new THREE.Frustum();
-    function animate(now:number){ requestAnimationFrame(animate); const dt=Math.min(.035,(now-last)/1000);last=now; const elapsed=active?(now-startAt)/1000:0; const remain=Math.max(0,90-elapsed);
+    function animate(now:number){
+      requestAnimationFrame(animate);
+      // Menus only need an occasional scene refresh; rendering the full city at
+      // display refresh rate before play was wasting an entire CPU core.
+      if(!active&&now-lastRenderedAt<100)return;
+      lastRenderedAt=now;
+      const dt=Math.min(.035,(now-last)/1000);last=now; const elapsed=active?(now-startAt)/1000:0; const remain=Math.max(0,90-elapsed);
       // One match travels from morning through noon and sunset into a visibly
       // dark final quarter, when the complete street-light network switches on.
       const dayProgress=THREE.MathUtils.clamp(elapsed/90,0,1),phaseT=dayProgress<.5?dayProgress*2:(dayProgress-.5)*2;
@@ -1283,7 +1527,7 @@ export default function Game() {
         lampCullAt=now;camera.updateMatrixWorld();viewProjection.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);viewFrustum.setFromProjectionMatrix(viewProjection);
         const candidates:{fixture:(typeof lampFixtures)[number];distance:number}[]=[];
         for(const fixture of lampFixtures){
-          const visible=nightFactor>.015&&viewFrustum.containsPoint(fixture.position)&&fixture.position.distanceToSquared(camera.position)<10500;
+          const visible=fixture.fixture.alive&&nightFactor>.015&&viewFrustum.containsPoint(fixture.position)&&fixture.position.distanceToSquared(camera.position)<10500;
           fixture.beam.visible=visible;fixture.groundPool.visible=visible;
           if(visible)candidates.push({fixture,distance:fixture.position.distanceToSquared(player.position)});
         }
@@ -1347,11 +1591,21 @@ export default function Game() {
         }
         if((agent.kind==="police"||agent.kind==="swat")&&agent.state==="road"&&distToThreat<28)agent.state="pursue";
         if(agent.kind==="fire"){
-          const fire=wrecks.filter(w=>w.life>0).sort((a,b)=>a.group.position.distanceToSquared(agent.mesh.position)-b.group.position.distanceToSquared(agent.mesh.position))[0];agent.target=fire?.group.position;
-          if(fire&&agent.mesh.position.distanceTo(fire.group.position)<10)agent.state="parked";
+          const activeCrew=responders.some(responder=>responder.kind==="firefighter"&&responder.source===agent&&!responder.retired);
+          if(agent.crewDeployed&&activeCrew){
+            // The engine remains parked until both firefighters and their hose
+            // have returned, even if another fire becomes the closest target.
+            agent.state="parked";
+          }else{
+            if(agent.crewDeployed)agent.crewDeployed=false;
+            const fire=wrecks.filter(w=>w.life>0).sort((a,b)=>a.group.position.distanceToSquared(agent.mesh.position)-b.group.position.distanceToSquared(agent.mesh.position))[0];
+            agent.target=fire?.group.position;
+            if(fire&&agent.mesh.position.distanceTo(fire.group.position)<=FIRE_TRUCK_PARK_RANGE)agent.state="parked";
+            else if(agent.state==="parked")agent.state="road";
+          }
         }
         if(agent.state==="road"){
-          const goal=agent.kind==="fire"&&agent.target?agent.target:player.position;
+          const goal=agent.kind==="fire"?(agent.target??agent.mesh.position.clone().add(new THREE.Vector3(Math.cos(agent.heading),0,Math.sin(agent.heading)).multiplyScalar(30))):player.position;
           const coordinate=agent.axis==="x"?agent.mesh.position.x:agent.mesh.position.z;
           const atIntersection=roadVals.some(v=>Math.abs(coordinate-v)<.55);
           if(atIntersection&&agent.kind!=="civilian"&&agent.turnCooldown<=0){
@@ -1371,14 +1625,23 @@ export default function Game() {
         agent.speed=THREE.MathUtils.damp(agent.speed,targetSpeed,rate/Math.max(1,targetSpeed),dt);
         const angleDelta=Math.atan2(Math.sin(agent.targetHeading-agent.heading),Math.cos(agent.targetHeading-agent.heading));
         agent.heading+=THREE.MathUtils.clamp(angleDelta,-1.65*dt,1.65*dt);
-        agent.mesh.rotation.y=Math.PI-agent.heading;
+        // Vehicle models are authored with their nose on local +X. Align that
+        // axis with the navigation heading instead of pointing the tail forward.
+        agent.mesh.rotation.y=-agent.heading;
         agent.reverseTimer=Math.max(0,agent.reverseTimer-dt);if(agent.state!=="crashed")agent.mesh.position.add(new THREE.Vector3(Math.cos(agent.heading),0,Math.sin(agent.heading)).multiplyScalar(agent.speed*dt*(agent.reverseTimer>0?-0.62:1)));
+        if(agent.state!=="crashed"&&agent.speed>1.5){
+          for(const fixture of streetFixtures){
+            if(fixture.alive&&agent.mesh.position.distanceToSquared(fixture.group.position)<Math.pow(fixture.radius+1.45,2)){
+              knockFixture(fixture,agent.mesh.position);agent.speed*=.62;break;
+            }
+          }
+        }
         const braking=Math.max(0,agent.brakeSpeed-agent.speed);agent.mesh.rotation.z=THREE.MathUtils.damp(agent.mesh.rotation.z,wantsStop&&braking>.8?.09:0,9,dt);
         if(wantsStop&&agent.brakeSpeed>5&&agent.speed>1&&Math.floor(now/55)%2===0){
           const mark=new THREE.Mesh(new THREE.PlaneGeometry(.18,.75),new THREE.MeshBasicMaterial({color:0x111313,transparent:true,opacity:.62,depthWrite:false}));mark.rotation.x=-Math.PI/2;mark.rotation.z=-agent.heading+Math.PI/2;mark.position.copy(agent.mesh.position).setY(.19);scene.add(mark);skidMarks.push({mesh:mark,born:now});
         }
         if(wantsStop&&agent.speed<.3)agent.brakeSpeed=0;
-        if(agent.state==="parked"&&!agent.crewDeployed){agent.crewDeployed=true;const crewKind=agent.kind==="fire"?"firefighter":agent.kind==="swat"?"swat":"police";spawnPerson(agent,crewKind,-1);spawnPerson(agent,crewKind,1);}
+        if(agent.state==="parked"&&agent.speed<.3&&!agent.crewDeployed){agent.crewDeployed=true;const crewKind=agent.kind==="fire"?"firefighter":agent.kind==="swat"?"swat":"police";spawnPerson(agent,crewKind,-1);spawnPerson(agent,crewKind,1);}
         if(agent.crash){
           agent.crash.age+=dt;const growth=THREE.MathUtils.clamp(agent.crash.age/4.2,0,1);agent.crash.smoke.scale.setScalar(.25+growth*2.5);
           // Below a readable flame size the post-process turns the sprite into a
@@ -1396,15 +1659,49 @@ export default function Game() {
       }
       for(const evacuee of evacuees){evacuee.gait+=dt*13;const away=evacuee.mesh.position.clone().sub(player.position).setY(0).normalize();evacuee.direction.lerp(away,.12).normalize();evacuee.mesh.position.addScaledVector(evacuee.direction,5.5*dt);evacuee.mesh.rotation.y=Math.atan2(evacuee.direction.x,evacuee.direction.z);evacuee.mesh.position.y=.05+Math.abs(Math.sin(evacuee.gait))*.08;}
       for(let i=skidMarks.length-1;i>=0;i--){const mark=skidMarks[i],age=(now-mark.born)/1000;(mark.mesh.material as THREE.MeshBasicMaterial).opacity=.62*THREE.MathUtils.clamp((18-age)/7,0,1);if(age>18){scene.remove(mark.mesh);mark.mesh.geometry.dispose();(mark.mesh.material as THREE.Material).dispose();skidMarks.splice(i,1);}}
+      const placeCylinderBetween=(mesh:THREE.Mesh,start:THREE.Vector3,end:THREE.Vector3)=>{
+        const direction=end.clone().sub(start),length=direction.length();
+        mesh.position.copy(start).lerp(end,.5);mesh.scale.set(1,length,1);
+        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),direction.normalize());
+      };
+      const removeFirefighterEquipment=(responder:Responder)=>{
+        for(const effect of [responder.hose,responder.waterJet,responder.waterSpray])if(effect?.parent){
+          scene.remove(effect);if((effect as THREE.Mesh).geometry)(effect as THREE.Mesh).geometry.dispose();(effect.material as THREE.Material).dispose();
+        }
+        if(responder.nozzle?.parent)responder.nozzle.parent.remove(responder.nozzle);
+        responder.hose=undefined;responder.waterJet=undefined;responder.waterSpray=undefined;responder.nozzle=undefined;
+      };
       for(const responder of responders){
-        if(!responder.target.alive||!responder.mesh.parent){if(responder.hose?.parent){scene.remove(responder.hose);responder.hose.geometry.dispose();(responder.hose.material as THREE.Material).dispose();}continue;}responder.cooldown-=dt;
-        const destination=responder.kind==="firefighter"?responder.source.target:player.position;
+        if(responder.retired)continue;
+        if(responder.kind==="firefighter"&&(responder.source.state==="crashed"||!responder.source.mesh.parent)){
+          removeFirefighterEquipment(responder);responder.retired=true;
+          const direction=responder.mesh.position.clone().sub(responder.source.mesh.position).setY(0);
+          if(!direction.lengthSq())direction.copy(responder.mesh.position).sub(player.position).setY(0);
+          evacuees.push({mesh:responder.mesh,direction:direction.normalize(),gait:rng()*Math.PI*2});
+          continue;
+        }
+        if(!responder.target.alive||!responder.mesh.parent){
+          removeFirefighterEquipment(responder);
+          if(responder.kind==="firefighter")responder.retired=true;
+          continue;
+        }responder.cooldown-=dt;
+        const assignedFireAlive=responder.kind==="firefighter"&&!!responder.assignedFire&&responder.assignedFire.life>0;
+        const destination=responder.kind==="firefighter"?(assignedFireAlive?responder.assignedFire!.group.position:responder.source.mesh.position):player.position;
         if(!destination)continue;const delta=destination.clone().sub(responder.mesh.position).setY(0),distance=delta.length();
         const range=responder.kind==="swat"?19:responder.kind==="police"?12:7;
-        if(distance>range*.78){const temp={mesh:responder.mesh,targetHeading:0};steerOffRoad(temp,destination);const step=destination.clone().sub(responder.mesh.position).setY(0).normalize();responder.mesh.position.addScaledVector(step,(responder.kind==="firefighter"?3.2:4.2)*dt);}
+        const moveThreshold=responder.kind==="firefighter"&&!assignedFireAlive?1.7:range*.78;
+        if(distance>moveThreshold){const temp={mesh:responder.mesh,targetHeading:0};steerOffRoad(temp,destination);const step=destination.clone().sub(responder.mesh.position).setY(0).normalize();responder.mesh.position.addScaledVector(step,(responder.kind==="firefighter"?3.2:4.2)*dt);}
         responder.mesh.rotation.y=Math.atan2(-delta.z,delta.x);
-        if(responder.hose){
-          const points=[responder.source.mesh.position.clone().setY(.45),responder.mesh.position.clone().setY(.35)];responder.hose.geometry.setFromPoints(points);
+        if(responder.hose&&responder.nozzle){
+          const truckOutlet=responder.source.mesh.position.clone().setY(.62);
+          const hand=responder.mesh.position.clone().add(new THREE.Vector3(0,1.08,0));
+          const hoseLength=truckOutlet.distanceTo(hand);
+          responder.hose.visible=responder.source.state==="parked"&&hoseLength<=MAX_HOSE_LENGTH;
+          if(responder.hose.visible)placeCylinderBetween(responder.hose,truckOutlet,hand);
+        }
+        if(responder.kind==="firefighter"&&!assignedFireAlive&&distance<2.4){
+          removeFirefighterEquipment(responder);responder.retired=true;responder.target.alive=false;scene.remove(responder.mesh);
+          continue;
         }
         const reloading=responder.reloadUntil>now;
         if(responder.weapon&&responder.rightArm&&responder.leftArm){
@@ -1414,9 +1711,32 @@ export default function Game() {
             responder.rightArm.rotation.x=-.55-Math.sin(phase*Math.PI)*.7;responder.leftArm.rotation.x=-.45-Math.sin(phase*Math.PI)*.55;
           }else{responder.weapon.rotation.z=THREE.MathUtils.damp(responder.weapon.rotation.z,0,14,dt);responder.weapon.position.y=THREE.MathUtils.damp(responder.weapon.position.y,1.13,14,dt);responder.rightArm.rotation.x=THREE.MathUtils.damp(responder.rightArm.rotation.x,-1.05,14,dt);responder.leftArm.rotation.x=THREE.MathUtils.damp(responder.leftArm.rotation.x,-.9,14,dt);}
         }
-        if(distance<range&&responder.cooldown<=0&&!reloading){
+        const fullyDismounted=now-responder.deployedAt>=650&&responder.source.speed<.35;
+        const fireVictim=responder.kind==="firefighter"&&assignedFireAlive?responder.assignedFire:undefined;
+        const truckInRange=!!fireVictim&&responder.source.mesh.position.distanceTo(fireVictim.group.position)<=FIRE_TRUCK_PARK_RANGE+1;
+        const spraying=responder.kind==="firefighter"&&fullyDismounted&&responder.source.state==="parked"&&truckInRange&&distance<range&&!!fireVictim;
+        if(responder.waterJet&&responder.waterSpray){
+          responder.waterJet.visible=spraying;responder.waterSpray.visible=spraying;
+          if(spraying){
+            const nozzleTip=responder.mesh.position.clone().setY(1.08);
+            const impact=destination.clone().setY(.9);
+            placeCylinderBetween(responder.waterJet,nozzleTip,impact);
+            responder.waterSpray.position.copy(impact);responder.waterSpray.material.rotation=now*.006;
+            responder.waterSpray.scale.setScalar(1.8+Math.sin(now*.02)*.35);
+          }
+        }
+        if(fullyDismounted&&distance<range&&responder.cooldown<=0&&!reloading){
           if(responder.kind==="firefighter"){
-            responder.cooldown=.09;const victim=wrecks.find(w=>w.group.position.distanceTo(destination)<1);if(victim)victim.life-=.11;
+            responder.cooldown=.09;
+            if(spraying&&fireVictim){
+              fireVictim.life-=.11;
+              for(let i=0;i<4;i++){
+                const material=new THREE.SpriteMaterial({map:glowTexture,color:0xf4fbf7,transparent:true,opacity:.78,depthWrite:false});
+                const sprite=new THREE.Sprite(material);sprite.position.copy(destination).add(new THREE.Vector3((rng()-.5)*2,.7+rng()*1.5,(rng()-.5)*2));sprite.scale.setScalar(.8+rng()*1.3);scene.add(sprite);
+                steamClouds.push({sprite,velocity:new THREE.Vector3((rng()-.5)*.8,1.5+rng()*2,(rng()-.5)*.8),life:1.1+rng()*.8,maxLife:1.9});
+              }
+              while(steamClouds.length>180){const old=steamClouds.shift()!;scene.remove(old.sprite);old.sprite.material.dispose();}
+            }
           }else if(responder.ammo<=0){
             responder.reloadUntil=now+responder.reloadDuration;responder.ammo=responder.maxAmmo;responder.cooldown=responder.reloadDuration/1000;
           }else{
@@ -1428,6 +1748,11 @@ export default function Game() {
         }
       }
       for(let i=tracers.length-1;i>=0;i--){tracers[i].life-=dt;if(tracers[i].life<=0){scene.remove(tracers[i].line);tracers[i].line.geometry.dispose();(tracers[i].line.material as THREE.Material).dispose();tracers.splice(i,1);}}
+      for(let i=steamClouds.length-1;i>=0;i--){
+        const steam=steamClouds[i];steam.life-=dt;steam.sprite.position.addScaledVector(steam.velocity,dt);steam.velocity.multiplyScalar(Math.pow(.3,dt));
+        const progress=1-Math.max(0,steam.life)/steam.maxLife;steam.sprite.scale.multiplyScalar(1+dt*(1.2-progress*.55));steam.sprite.material.opacity=.78*Math.pow(Math.max(0,1-progress),1.25);
+        if(steam.life<=0){scene.remove(steam.sprite);steam.sprite.material.dispose();steamClouds.splice(i,1);}
+      }
       const basePosition=new THREE.Vector3();
       for(let i=wrecks.length-1;i>=0;i--){
         const wreck=wrecks[i];wreck.life-=dt;const decay=THREE.MathUtils.clamp(wreck.life/wreck.maxLife,0,1);
@@ -1568,11 +1893,35 @@ export default function Game() {
         const viewForward=new THREE.Vector3(-Math.sin(cameraYaw),0,-Math.cos(cameraYaw));
         const viewRight=new THREE.Vector3(Math.cos(cameraYaw),0,-Math.sin(cameraYaw));
         const move=viewForward.multiplyScalar(inputForward).addScaledVector(viewRight,inputRight);
-        const mass=1+people*.11, maximumSpeed=(keys.has("shift")?15:10.5)/Math.pow(mass,.12);
+        if(stamina<=0)sprintExhausted=true;
+        else if(stamina>=25)sprintExhausted=false;
+        const sprinting=keys.has("shift")&&move.lengthSq()>0&&!sprintExhausted;
+        stamina=THREE.MathUtils.clamp(stamina+(sprinting?-STAMINA_SPRINT_COST_PER_SECOND:STAMINA_REGEN_PER_SECOND)*dt,0,STAMINA_MAX);
+        const mass=1+people*.11, maximumSpeed=(sprinting?15:10.5)/Math.pow(mass,.12);
         if(move.lengthSq()){move.normalize();velocity.addScaledVector(move,24/Math.sqrt(mass)*dt);}
         else {const speed=velocity.length(),braking=10/Math.pow(mass,.38)*dt;if(speed>0)velocity.multiplyScalar(Math.max(0,(speed-braking)/speed));}
         velocity.multiplyScalar(Math.pow(.78,dt)); if(velocity.length()>maximumSpeed)velocity.setLength(maximumSpeed);
         const displacement=velocity.clone().multiplyScalar(dt); player.position.add(displacement);
+        if(velocity.length()>.65){
+          for(const fixture of streetFixtures){
+            if(fixture.alive&&player.position.distanceToSquared(fixture.group.position)<Math.pow(radius+fixture.radius,2)){
+              knockFixture(fixture,player.position);velocity.multiplyScalar(fixture.kind==="fence"?.82:.68);break;
+            }
+          }
+          for(const bridge of footbridges){
+            if(bridge.collapsed)continue;
+            const local=bridge.group.worldToLocal(player.position.clone()),across=Math.abs(local.z);
+            const structuralContact=across<3+radius&&((Math.abs(local.x)>7.5&&Math.abs(local.x)<14.5+radius)||(Math.abs(local.x)>17-radius&&Math.abs(local.x)<30+radius));
+            if(structuralContact&&!bridge.touching){
+              bridge.touching=true;bridge.hits++;
+              player.position.sub(displacement);velocity.multiplyScalar(-.38);
+              if(bridge.hits>=2){
+                bridge.collapsed=true;bridge.collapseAge=0;
+                reportNews("突发：人行天桥遭到二次撞击后整体崩塌");
+              }else reportNews("人行天桥支撑结构在撞击后严重变形");
+            }else if(!structuralContact)bridge.touching=false;
+          }
+        }
         if(displacement.lengthSq()){wormMass.rotation.z-=displacement.x/radius;wormMass.rotation.x+=displacement.z/radius;}
         player.position.y=radius*.62; player.scale.setScalar(1);shadow.scale.setScalar(radius/BASE_RADIUS);
         // Rolling through an existing pool transfers several wet stains onto the mass.
@@ -1605,9 +1954,30 @@ export default function Game() {
         }
         for(const t of targets){
           if(!t.alive||t.kind==="fragment")continue;const dx=player.position.x-t.mesh.position.x,dz=player.position.z-t.mesh.position.z;
+          if(t.kind==="building"){
+            // Buildings use their authored rectangular footprint. The previous
+            // reduced circle left the corners and much of long facades open.
+            const halfW=(t.width??t.radius*1.4)*.5+radius,halfD=(t.depth??t.radius*1.4)*.5+radius;
+            const touching=Math.abs(dx)<halfW&&Math.abs(dz)<halfD;
+            if(!touching){t.mesh.userData.playerContact=false;continue;}
+            const entering=!t.mesh.userData.playerContact;t.mesh.userData.playerContact=true;
+            if(entering&&!t.ruined&&velocity.length()>.6)damageBuilding(t,now);
+            const penetrationX=halfW-Math.abs(dx),penetrationZ=halfD-Math.abs(dz);
+            let nx=0,nz=0;
+            if(penetrationX<penetrationZ){
+              nx=dx>=0?1:-1;player.position.x=t.mesh.position.x+nx*halfW;
+            }else{
+              nz=dz>=0?1:-1;player.position.z=t.mesh.position.z+nz*halfD;
+            }
+            const inward=velocity.x*nx+velocity.z*nz;
+            if(inward<0){velocity.x-=inward*(t.ruined?1.05:1.45)*nx;velocity.z-=inward*(t.ruined?1.05:1.45)*nz;}
+            velocity.multiplyScalar(t.ruined?.55:.7);
+            continue;
+          }
           const contact=radius+t.radius*.55,distance=Math.hypot(dx,dz);
           if(distance<contact){
             if(t.kind==="tree"){fractureTree(t);velocity.multiplyScalar(.82);}
+            else if(t.kind==="car"&&velocity.length()>.6)collect(t);
             else if(radius>=t.minSize)collect(t);
             else if(t.kind!=="person"){
               const nx=distance>.001?dx/distance:1,nz=distance>.001?dz/distance:0;
@@ -1620,7 +1990,7 @@ export default function Game() {
         player.position.x=THREE.MathUtils.clamp(player.position.x,-82,82);player.position.z=THREE.MathUtils.clamp(player.position.z,-82,82);
         if(now-comboAt>2300)combo=1;
         if(remain<=0){finished=true;active=false;setEnded(true);}
-        setHud({score,people,combo,size:radius/BASE_RADIUS,time:Math.ceil(remain),destroyed});
+        setHud({score,people,combo,size:radius/BASE_RADIUS,time:Math.ceil(remain),destroyed,stamina,headlines,newsRevision});
       }
       for(let i=debris.length-1;i>=0;i--){
         const d=debris[i];d.life-=dt;d.vel.y-=12*dt;d.mesh.position.addScaledVector(d.vel,dt);
@@ -1642,6 +2012,23 @@ export default function Game() {
           if(d.vel.y<.12)d.vel.y=0;
         }
         if(d.life<0){const fragment=targets.find(target=>target.kind==="fragment"&&target.mesh===d.mesh);if(fragment)fragment.alive=false;scene.remove(d.mesh);debris.splice(i,1);}
+      }
+      for(const ruin of buildingRuins){
+        ruin.age+=dt;const sink=THREE.MathUtils.smoothstep(Math.min(1,ruin.age/3.2),0,1);
+        const shake=(1-sink)*Math.sin(ruin.age*25)*.12;
+        ruin.target.mesh.position.set(ruin.baseX+shake,-ruin.sinkDepth*sink,ruin.baseZ-shake*.65);
+        ruin.target.mesh.rotation.x=ruin.tiltX*sink+shake*.008;
+        ruin.target.mesh.rotation.z=ruin.tiltZ*sink-shake*.008;
+        for(let i=0;i<ruin.flames.length;i++){
+          const flame=ruin.flames[i],phase=flame.userData.effectPhase as number,base=flame.userData.basePosition as THREE.Vector3;
+          flame.position.set(base.x+Math.sin(now*.006+phase*9)*.16,base.y+.15+Math.sin(now*.012+phase*13)*.18,base.z);
+          flame.scale.y=(1.15+.35*Math.sin(now*.016+i))*flame.scale.x;
+        }
+        for(const smoke of ruin.smoke){
+          const phase=smoke.userData.effectPhase as number,base=smoke.userData.basePosition as THREE.Vector3,cycle=(now*.00012+phase)%1;
+          smoke.position.set(base.x+Math.sin(cycle*7+phase*11)*1.1*cycle,base.y+.8+cycle*9,base.z+Math.cos(cycle*6+phase*8)*.8*cycle);
+          smoke.scale.setScalar(1.7+cycle*4.4);(smoke.material as THREE.SpriteMaterial).opacity=.68*Math.pow(1-cycle,.55);
+        }
       }
       for(let i=explosions.length-1;i>=0;i--){
         const explosion=explosions[i];explosion.age+=dt;
@@ -1679,6 +2066,38 @@ export default function Game() {
           treeChunks.push({mesh:child,vel:new THREE.Vector3((rng()-.5)*2,1+rng()*2,(rng()-.5)*2),spin:new THREE.Vector3((rng()-.5)*4,(rng()-.5)*4,(rng()-.5)*4),born:chunk.born,stage:chunk.stage});
         }
         if(age>=30){scene.remove(chunk.mesh);treeChunks.splice(i,1);}
+      }
+      for(const fixture of streetFixtures){
+        if(fixture.alive||fixture.fallAngle>=Math.PI/2)continue;
+        fixture.fallSpeed+=dt*3.2;fixture.fallAngle=Math.min(Math.PI/2,fixture.fallAngle+fixture.fallSpeed*dt);
+        fixture.group.quaternion.setFromAxisAngle(fixture.fallAxis,fixture.fallAngle);
+        if(fixture.fallAngle>=Math.PI/2&&!fixture.impactDone){
+          fixture.impactDone=true;if(fixture.kind==="power")powerPoleImpact(fixture);
+        }
+      }
+      for(const bridge of footbridges){
+        if(!bridge.collapsed)continue;
+        bridge.collapseAge+=dt;const progress=THREE.MathUtils.smoothstep(Math.min(1,bridge.collapseAge/2.4),0,1);
+        const shake=(1-progress)*Math.sin(bridge.collapseAge*28)*.16;
+        bridge.group.position.set(bridge.baseX+shake,-7.8*progress,bridge.baseZ-shake*.6);
+        bridge.group.rotation.x=.08*progress;
+        bridge.group.rotation.z=.3*progress;
+      }
+      for(const wire of powerWires){
+        const a=wire.a.group.localToWorld(new THREE.Vector3().copy(wire.offset).setY(6.45));
+        const b=wire.b.group.localToWorld(new THREE.Vector3().copy(wire.offset).setY(6.45));
+        const mid=a.clone().lerp(b,.5);mid.y=Math.max(.16,Math.min(a.y,b.y)-.42);
+        wire.line.geometry.setFromPoints([a,mid,b]);
+      }
+      for(let i=electricalSparks.length-1;i>=0;i--){
+        const spark=electricalSparks[i];spark.life-=dt;spark.velocity.y-=10*dt;spark.mesh.position.addScaledVector(spark.velocity,dt);
+        spark.mesh.lookAt(spark.mesh.position.clone().add(spark.velocity));(spark.mesh.material as THREE.MeshBasicMaterial).opacity=Math.max(0,spark.life/spark.maxLife);
+        if(spark.life<=0){scene.remove(spark.mesh);(spark.mesh.material as THREE.Material).dispose();electricalSparks.splice(i,1);}
+      }
+      for(let i=electricalFires.length-1;i>=0;i--){
+        const fire=electricalFires[i];fire.life-=dt;const fade=THREE.MathUtils.clamp(fire.life/1.4,0,1);
+        for(let j=0;j<fire.sprites.length;j++){const sprite=fire.sprites[j];sprite.scale.x=.8+.25*Math.sin(now*.018+j);(sprite.material as THREE.SpriteMaterial).opacity=.85*fade;}
+        if(fire.life<=0){for(const sprite of fire.sprites){scene.remove(sprite);sprite.material.dispose();}electricalFires.splice(i,1);}
       }
       // Body stains last roughly 8–13 seconds; road stains persist much longer.
       bloodLoad=Math.max(0,bloodLoad-dt*.035);
@@ -1719,8 +2138,8 @@ export default function Game() {
 
   return <main className="game-shell">
     <div ref={mount} className="viewport" aria-label="城市破坏游戏画面" />
-    <header className="topbar"><div><span className="eyebrow">CITY DESTRUCTION</span><strong>{hud.destroyed}<small> BUILDINGS</small></strong></div><div className="rage"><span>RAGE</span><i><b style={{width:`${Math.min(100,hud.combo*6)}%`}}/></i></div><div className="timer">{String(Math.floor(hud.time/60)).padStart(2,"0")}:{String(hud.time%60).padStart(2,"0")}</div></header>
-    <section className="broadcast"><span className="live">LIVE</span><div><small>ESTIMATED DAMAGE</small><strong>${hud.score.toLocaleString()}</strong></div><div><small>HUMAN CASUALTIES</small><strong>{hud.people}</strong></div><div className="ticker">LATEST DEVELOPMENT <b>LOCAL POLICE INVESTIGATING</b></div><div ref={performanceRef} className="performance"><span>模型 <b>—</b></span><span>面 <b>—</b></span><span>FPS <b>—</b></span></div></section>
+    <header className="topbar"><div><span className="eyebrow">CITY DESTRUCTION</span><strong>{hud.destroyed}<small> BUILDINGS</small></strong></div><div className="stamina" aria-label={`体力 ${Math.round(hud.stamina)}%`}><span>体力</span><i><b style={{width:`${hud.stamina}%`}}/></i></div><div className="timer">{String(Math.floor(hud.time/60)).padStart(2,"0")}:{String(hud.time%60).padStart(2,"0")}</div></header>
+    <section className="broadcast"><span className="live">LIVE</span><div><small>ESTIMATED DAMAGE</small><strong>${hud.score.toLocaleString()}</strong></div><div><small>HUMAN CASUALTIES</small><strong>{hud.people}</strong></div><div className="ticker"><small>LATEST DEVELOPMENT</small><NewsTicker headlines={hud.headlines} revision={hud.newsRevision}/></div><div ref={performanceRef} className="performance"><span>模型 <b>—</b></span><span>面 <b>—</b></span><span>FPS <b>—</b></span></div></section>
     {started&&!ended&&<div className="combo" key={hud.combo}>{hud.combo>2&&<>COMBO <b>×{hud.combo}</b></>}</div>}
     {!started&&!ended&&<section className="menu"><p className="kicker">A CITY HAS 90 SECONDS LEFT</p><h1>TYPHOON<br/><em>TERROR</em></h1><p>吞噬街道，撕碎城市。越大，就能摧毁越大的目标。</p><button onClick={()=>gameRef.current.start()}>开始灾难 <span>ENTER</span></button><div className="controls"><span><kbd>WASD</kbd> 移动</span><span><kbd>SHIFT</kbd> 冲刺</span><span><kbd>鼠标拖动</kbd> 旋转视角</span></div></section>}
     {ended&&<section className="menu result"><p className="kicker">90 SECONDS OF TOTAL CHAOS</p><h2>CITY REPORT</h2><div className="stats"><span>损失金额<b>${hud.score.toLocaleString()}</b></span><span>建筑摧毁<b>{hud.destroyed}</b></span><span>最大体积<b>{hud.size.toFixed(1)}×</b></span></div><button onClick={()=>gameRef.current.restart()}>再次破坏</button></section>}

@@ -1335,7 +1335,10 @@ export default function Game() {
       // only explicit danger/pursuit states enter the obstacle-aware free-space solver.
       for(const agent of vehicleAgents){
         if(!agent.mesh.parent)continue;
-        if(agent.mesh.userData.waitingForCityEntry&&Math.abs(agent.mesh.position.x)<=82&&Math.abs(agent.mesh.position.z)<=82){agent.mesh.visible=true;agent.mesh.userData.waitingForCityEntry=false;}
+        const insideCity=Math.abs(agent.mesh.position.x)<=82&&Math.abs(agent.mesh.position.z)<=82;
+        // Visibility follows the boundary continuously: dispatches appear on
+        // entry and any vehicle leaving the authored city disappears again.
+        agent.mesh.visible=insideCity;if(insideCity)agent.mesh.userData.waitingForCityEntry=false;
         agent.turnCooldown=Math.max(0,agent.turnCooldown-dt);
         const distToThreat=agent.mesh.position.distanceTo(player.position),previousState=agent.state;
         if(agent.kind==="civilian"&&active&&distToThreat<11+radius*1.5){

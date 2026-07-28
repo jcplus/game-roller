@@ -65,7 +65,6 @@ oauth*.json
 *.sqlite3
 
 # Hosting/provider configuration and generated state
-.openai/
 .vercel
 .cloudflare/
 

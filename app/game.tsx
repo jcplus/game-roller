@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import * as THREE from "three";
 
 type Hud = { score: number; people: number; combo: number; size: number; time: number; destroyed: number; stamina: number; health: number; rage: number; headlines: string[]; newsRevision: number };
@@ -65,23 +65,50 @@ export default function Game() {
   const mount = useRef<HTMLDivElement>(null);
   const [started, setStarted] = useState(false);
   const [ended, setEnded] = useState(false);
-  const [hud, setHud] = useState<Hud>({ score: 0, people: 0, combo: 1, size: 1, time: 90, destroyed: 0, stamina: 100, health: 100, rage: 1, headlines: ["当地警方正在调查异常事件"], newsRevision: 0 });
+  const [mobileMode,setMobileMode]=useState(false);
+  const [moveKnob,setMoveKnob]=useState({x:0,y:0});
+  const [cameraKnob,setCameraKnob]=useState({x:0,y:0});
+  const [hud, setHud] = useState<Hud>({ score: 0, people: 0, combo: 1, size: 1, time: 180, destroyed: 0, stamina: 100, health: 100, rage: 1, headlines: ["当地警方正在调查异常事件"], newsRevision: 0 });
   const gameRef = useRef({ start: () => {}, restart: () => {} });
   const performanceRef = useRef<HTMLDivElement>(null);
+  const mobileModeRef=useRef(false),mobileMoveRef=useRef({x:0,y:0}),mobileCameraDeltaRef=useRef(0),cameraPointerRef=useRef<{x:number;y:number}|null>(null);
+
+  useEffect(()=>{
+    const query=window.matchMedia("(pointer: coarse)"),sync=()=>{const enabled=query.matches||/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);mobileModeRef.current=enabled;setMobileMode(enabled);};
+    sync();query.addEventListener("change",sync);return()=>query.removeEventListener("change",sync);
+  },[]);
+
+  const updateMoveStick=(event:ReactPointerEvent<HTMLDivElement>)=>{
+    const rect=event.currentTarget.getBoundingClientRect(),dx=event.clientX-(rect.left+rect.width/2),dy=event.clientY-(rect.top+rect.height/2),limit=rect.width*.31,length=Math.hypot(dx,dy),scale=length>limit?limit/length:1,x=dx*scale,y=dy*scale;
+    mobileMoveRef.current={x:x/limit,y:-y/limit};setMoveKnob({x,y});
+  };
+  const stopMoveStick=(event:ReactPointerEvent<HTMLDivElement>)=>{if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);mobileMoveRef.current={x:0,y:0};setMoveKnob({x:0,y:0});};
+  const updateCameraStick=(event:ReactPointerEvent<HTMLDivElement>)=>{
+    cameraPointerRef.current={x:event.clientX,y:event.clientY};
+    const rect=event.currentTarget.getBoundingClientRect(),dx=event.clientX-(rect.left+rect.width/2),dy=event.clientY-(rect.top+rect.height/2),limit=rect.width*.3,length=Math.hypot(dx,dy),scale=length>limit?limit/length:1;setCameraKnob({x:dx*scale,y:dy*scale});
+    const turn=THREE.MathUtils.clamp(dx/limit,-1,1);mobileCameraDeltaRef.current=Math.abs(turn)<.12?0:turn;
+  };
+  const stopCameraStick=(event:ReactPointerEvent<HTMLDivElement>)=>{if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);cameraPointerRef.current=null;mobileCameraDeltaRef.current=0;setCameraKnob({x:0,y:0});};
 
   useEffect(() => {
     if (!mount.current) return;
     const host = mount.current;
+    const mobileLowPower=mobileModeRef.current;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x7d8b83);
     scene.fog = new THREE.FogExp2(0x73807b, 0.0045);
     const camera = new THREE.PerspectiveCamera(38, host.clientWidth / host.clientHeight, 0.1, 600);
     camera.position.set(42, 56, 42);
     const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25));
+    renderer.setPixelRatio(Math.min(devicePixelRatio, mobileLowPower?.7:1));
     renderer.setSize(host.clientWidth, host.clientHeight);
-    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.enabled = !mobileLowPower;
     renderer.shadowMap.type = THREE.PCFShadowMap;
+    // The city is overwhelmingly static. Rendering its complete shadow map on
+    // every frame was the largest GPU cost; dynamic actors already have blob
+    // shadows, so bake the expensive map once.
+    renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = true;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     // Preserve counters across the world and GPU post-processing passes. They
     // are reset explicitly once per frame below.
@@ -297,7 +324,7 @@ export default function Game() {
 
     // Random rain fronts: bright falling streaks plus animated road puddles that
     // accumulate in rain and evaporate slowly after the weather clears.
-    const weatherRandom=seeded(93210),rainCount=360,rainPositions=new Float32Array(rainCount*6);
+    const weatherRandom=seeded(93210),rainCount=mobileLowPower?100:360,rainPositions=new Float32Array(rainCount*6);
     for(let i=0;i<rainCount;i++){
       const n=i*6,x=(weatherRandom()-.5)*110,y=4+weatherRandom()*54,z=(weatherRandom()-.5)*110,length=.7+weatherRandom()*2.2;
       rainPositions[n]=x;rainPositions[n+1]=y;rainPositions[n+2]=z;rainPositions[n+3]=x-.18;rainPositions[n+4]=y-length;rainPositions[n+5]=z+.08;
@@ -331,7 +358,7 @@ export default function Game() {
     }
     // Dense puddle fields: broad pools collect near lane edges, while smaller
     // irregular remnants are scattered through tyre tracks and intersections.
-    for(let i=0;i<145;i++){
+    for(let i=0;i<(mobileLowPower?36:145);i++){
       const vertical=weatherRandom()>.5,lane=[-54,0,54][Math.floor(weatherRandom()*3)],along=-82+weatherRandom()*164;
       const edgeBiased=weatherRandom()>.38,across=edgeBiased?(weatherRandom()>.5?1:-1)*(5.2+weatherRandom()*2.2):(weatherRandom()-.5)*9.5;
       const broad=i<48,width=broad?7+weatherRandom()*11:1.8+weatherRandom()*6,height=broad?3+weatherRandom()*6:.8+weatherRandom()*3.2;
@@ -355,55 +382,57 @@ export default function Game() {
     const roofWear=seeded(64321);for(let i=0;i<240;i++){roofContext.fillStyle=roofWear()>.55?"rgba(72,61,45,.16)":"rgba(235,220,175,.14)";roofContext.fillRect(roofWear()*128,roofWear()*64,1+roofWear()*5,1+roofWear()*2);}
     const roofTexture=new THREE.CanvasTexture(roofCanvas);roofTexture.wrapS=roofTexture.wrapT=THREE.RepeatWrapping;roofTexture.repeat.set(5,2);roofTexture.colorSpace=THREE.SRGBColorSpace;
     const bridgeRoofMaterial=new THREE.MeshStandardMaterial({map:roofTexture,color:0xd0c5a4,roughness:.95});
-    type FootbridgeState={group:THREE.Group;hits:number;touching:boolean;collapsed:boolean;collapseAge:number;baseX:number;baseZ:number};
+    type FootbridgeState={group:THREE.Group;hits:number;touching:boolean;collapsed:boolean;collapseAge:number;baseX:number;baseZ:number;halfSpan:number;stairEnd:number};
     const footbridges:FootbridgeState[]=[];
-    const addFootbridge=(x:number,z:number,rotation:number)=>{
+    const addFootbridge=(x:number,z:number,rotation:number,roadWidth:number)=>{
       const bridge=new THREE.Group();bridge.position.set(x,0,z);bridge.rotation.y=rotation;scene.add(bridge);
       const steel=0x446b70,steelDark=0x294b52,floor=0x728b86;
+      const span=roadWidth+4.4,halfSpan=span/2,steps=8,stepRun=.55,stairEnd=halfSpan+(steps-1)*stepRun+1.4;
       // Main enclosed span, high enough for all traffic.
-      box(0,6.05,0,35,.55,4.4,floor,bridge);
-      box(0,6.45,-2.08,35,.22,.24,steelDark,bridge);box(0,6.45,2.08,35,.22,.24,steelDark,bridge);
+      box(0,6.05,0,span,.55,3.4,floor,bridge);
+      box(0,6.45,-1.58,span,.22,.24,steelDark,bridge);box(0,6.45,1.58,span,.22,.24,steelDark,bridge);
       for(const side of [-1,1]){
-        box(0,8.15,side*2.08,35,.18,.22,steel,bridge);
-        for(let px=-16;px<=16;px+=2){
-          box(px,7.3,side*2.08,.16,2.05,.2,steel,bridge);
-          const brace=box(px+.48,7.28,side*2.09,.11,2.25,.16,steelDark,bridge);brace.rotation.z=(px/2)%2===0?.48:-.48;
+        box(0,8.15,side*1.58,span,.18,.22,steel,bridge);
+        for(let px=-halfSpan+1;px<=halfSpan-1;px+=2){
+          box(px,7.3,side*1.58,.16,2.05,.2,steel,bridge);
+          const brace=box(px+.48,7.28,side*1.59,.11,2.25,.16,steelDark,bridge);brace.rotation.z=(Math.round(px/2))%2===0?.48:-.48;
         }
       }
       // Two slightly pitched corrugated roof sheets and raised ridge cap.
-      const roofA=surfaceBox(0,8.75,-1.18,35.8,.18,2.7,bridgeRoofMaterial,bridge);roofA.rotation.x=-.13;
-      const roofB=surfaceBox(0,8.75,1.18,35.8,.18,2.7,bridgeRoofMaterial,bridge);roofB.rotation.x=.13;
-      surfaceBox(0,9.02,0,36,.18,.28,bridgeRoofMaterial,bridge);
-      // Four steel trestles with cross bracing and concrete feet.
-      for(const px of [-13,-9,9,13]){
+      const roofA=surfaceBox(0,8.75,-.9,span+.8,.18,2.1,bridgeRoofMaterial,bridge);roofA.rotation.x=-.13;
+      const roofB=surfaceBox(0,8.75,.9,span+.8,.18,2.1,bridgeRoofMaterial,bridge);roofB.rotation.x=.13;
+      surfaceBox(0,9.02,0,span+1,.18,.28,bridgeRoofMaterial,bridge);
+      // Supports stand at the curb lines, never in a traffic lane.
+      for(const px of [-halfSpan+1.25,halfSpan-1.25]){
         for(const side of [-1,1]){
-          box(px,3.1,side*1.72,.42,5.8,.42,steelDark,bridge);
-          box(px,.3,side*1.72,1.05,.5,1.05,0x777b73,bridge);
+          box(px,3.1,side*1.28,.42,5.8,.42,steelDark,bridge);
+          box(px,.3,side*1.28,1.05,.5,1.05,0x777b73,bridge);
         }
-        const cross=box(px,3.6,0,.2,4.3,3.65,steel,bridge);cross.rotation.x=Math.PI/4;
+        const cross=box(px,3.6,0,.2,4.3,2.7,steel,bridge);cross.rotation.x=Math.PI/4;
       }
       // Long staircases continue from both ends; individual treads make the
       // striped stepped texture visible from the isometric camera.
-      const steps=14;
       for(const end of [-1,1])for(let i=0;i<steps;i++){
-        const t=i/(steps-1),height=.35+(1-t)*5.45,px=end*(18+i*.72);
-        box(px,height*.5,0,1.25,height,4.25,steel,bridge);
-        box(px,height+.08,0,1.28,.16,4.18,0xa59d83,bridge);
+        const t=i/(steps-1),height=.35+(1-t)*5.45,px=end*(halfSpan+i*stepRun);
+        box(px,height*.5,0,stepRun+.12,height,3.25,steel,bridge);
+        box(px,height+.08,0,stepRun+.15,.16,3.18,0xa59d83,bridge);
         for(const side of [-1,1]){
-          box(px,height+.62,side*2.03,1.22,.12,.15,steelDark,bridge);
-          box(px,height+.3,side*2.03,.14,.9,.14,steelDark,bridge);
+          box(px,height+.62,side*1.53,stepRun+.1,.12,.15,steelDark,bridge);
+          box(px,height+.3,side*1.53,.14,.9,.14,steelDark,bridge);
         }
       }
-      for(const end of [-1,1])box(end*28.1,.22,0,3.1,.28,5.3,0x787c74,bridge);
+      for(const end of [-1,1])box(end*stairEnd,.22,0,2.5,.28,4.1,0x787c74,bridge);
       // Small warm lamps below the canopy.
-      for(let px=-14;px<=14;px+=7){
+      for(let px=-halfSpan+2;px<=halfSpan-2;px+=6){
         const lampMat=new THREE.MeshStandardMaterial({color:0xf3c56a,emissive:0xf0a72d,emissiveIntensity:1.4,roughness:.35});
         const lamp=new THREE.Mesh(sphereGeo,lampMat);lamp.position.set(px,8.25,0);lamp.scale.setScalar(.16);bridge.add(lamp);
       }
-      footbridges.push({group:bridge,hits:0,touching:false,collapsed:false,collapseAge:0,baseX:x,baseZ:z});
+      footbridges.push({group:bridge,hits:0,touching:false,collapsed:false,collapseAge:0,baseX:x,baseZ:z,halfSpan,stairEnd});
     };
-    addFootbridge(-54,14,0);
-    addFootbridge(14,54,Math.PI/2);
+    // Span quiet road sections away from junctions. Each stair lands on the
+    // sidewalk immediately outside its road's measured edge.
+    addFootbridge(-54,27,0,14);
+    addFootbridge(27,54,Math.PI/2,18);
 
     const targets: Target[] = [];
     const buildings: THREE.Object3D[] = [];
@@ -642,7 +671,7 @@ export default function Game() {
       else if(layouts.length===2){const vertical=Math.abs(layouts[0].x-layouts[1].x)>1;box(bx,.2,bz,vertical?2.2:34,.13,vertical?34:2.2,palette.concrete);}
 
       for(const parcel of layouts){
-        const buildingScale=.52+rng()*.22,w=Math.max(7,parcel.w*buildingScale),d=Math.max(7,parcel.d*(.5+rng()*.23));
+        const buildingScale=.42+rng()*.2,w=Math.max(6,parcel.w*buildingScale),d=Math.max(6,parcel.d*(.4+rng()*.21));
         const areaFactor=Math.sqrt(parcel.w*parcel.d)/12,h=6+Math.floor((areaFactor+rng()*2.4))*3;
         const x=bx+parcel.x+(rng()-.5)*Math.max(0,parcel.w-w-3),z=bz+parcel.z+(rng()-.5)*Math.max(0,parcel.d-d-3);
         const g=new THREE.Group();g.position.set(x,0,z);scene.add(g);
@@ -1141,7 +1170,7 @@ export default function Game() {
     const responders:Responder[]=[],wrecks:Wreck[]=[],tracers:{line:THREE.Line;life:number}[]=[],skidMarks:{mesh:THREE.Mesh;born:number}[]=[],evacuees:{mesh:THREE.Group;direction:THREE.Vector3;gait:number}[]=[];
     const steamClouds:{sprite:THREE.Sprite;velocity:THREE.Vector3;life:number;maxLife:number}[]=[];
     const FIRE_TRUCK_PARK_RANGE=13,MAX_HOSE_LENGTH=16;
-    let nextPoliceDispatch=450,nextFireDispatch=7000,nextHelicopterDispatch=5000;
+    let nextPoliceDispatch=450,nextFireDispatch=7000,nextHelicopterDispatch=5000,nextBomberDispatch=0;
     const spawnPerson=(vehicle:VehicleAgent,kind:Responder["kind"],side:number)=>{
       const g=new THREE.Group();g.position.copy(vehicle.mesh.position).add(new THREE.Vector3(0,0,side*1.5));scene.add(g);
       box(0,.85,0,.42,1.05,.34,kind==="firefighter"?0xd7a52b:kind==="swat"?0x101415:0x294c68,g);
@@ -1242,7 +1271,7 @@ export default function Game() {
       if(!standby){
         const staged=helicopters.find(item=>item.state==="standby");
         if(staged){
-          staged.mesh.position.set(edge*112,24,along);staged.mesh.visible=true;staged.beam.visible=true;staged.pool.visible=true;staged.state="approach";
+          staged.mesh.position.set(edge*112,24,along);staged.mesh.visible=true;staged.beam.visible=!mobileLowPower;staged.pool.visible=!mobileLowPower;staged.state="approach";
           reportNews("军方黑鹰直升机正从城市外围进入交战区域");return;
         }
       }
@@ -1286,6 +1315,7 @@ export default function Game() {
       box(0,0,0,.12,3.5,.15,0x111412,tailRotor);const tailBlade=box(0,0,0,.12,.15,3.5,0x111412,tailRotor);tailBlade.rotation.y=.15;
       const beam=new THREE.Mesh(helicopterBeamGeometry,helicopterBeamMaterial.clone());scene.add(beam);
       const pool=new THREE.Mesh(new THREE.PlaneGeometry(11.5,11.5),helicopterPoolMaterial.clone());pool.rotation.x=-Math.PI/2;scene.add(pool);
+      if(mobileLowPower){beam.visible=false;pool.visible=false;}
       const helicopter:HelicopterAgent={mesh:g,mainRotor,tailRotor,beam,pool,crew:[],state:standby?"standby":"approach",velocity:new THREE.Vector3(),desiredHeight:18,wobble:new THREE.Vector3(),wobbleGoal:new THREE.Vector3(),nextWobble:0,crashSpin:0,gunCooldown:.5,reported:false};
       makeHelicopterCrew(helicopter,"pilot",new THREE.Vector3(-2.55,.35,0));
       makeHelicopterCrew(helicopter,"gunner",new THREE.Vector3(.15,.05,-1.43));
@@ -1319,16 +1349,16 @@ export default function Game() {
     const headlines=["当地警方正在调查异常事件"];let newsRevision=0;
     const reportNews=(message:string)=>{headlines.push(message);if(headlines.length>8)headlines.shift();newsRevision++;};
     let cameraYaw=-Math.PI*3/4, dragging=false, dragX=0;camera.position.set(player.position.x+Math.sin(cameraYaw)*54,48,player.position.z+Math.cos(cameraYaw)*54);camera.lookAt(player.position);
-    const debris:{mesh:THREE.Mesh;vel:THREE.Vector3;spin:THREE.Vector3;life:number;bloody?:boolean;lastTrail?:THREE.Vector3}[]=[];
+    const debris:{mesh:THREE.Mesh;vel:THREE.Vector3;spin:THREE.Vector3;life:number;bloody?:boolean;sinking?:boolean;lastTrail?:THREE.Vector3}[]=[];
     type BuildingRuin={
       target:Target; age:number; baseX:number; baseZ:number; sinkDepth:number; tiltX:number; tiltZ:number;
       flames:THREE.Sprite[]; smoke:THREE.Sprite[];
     };
     const buildingRuins:BuildingRuin[]=[];
     const explosions:{
-      sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean}[];
+      sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean;delay?:number;aspect?:number}[];
       sparks:{mesh:THREE.Mesh;velocity:THREE.Vector3;age:number;life:number}[];
-      ring:THREE.Mesh;light:THREE.PointLight;age:number;life:number;
+      ring:THREE.Mesh;light:THREE.PointLight;age:number;life:number;shockwave?:THREE.Mesh;
     }[]=[];
     const pendingCarExplosions:Target[]=[];
     let nextCarExplosionAt=0;
@@ -1338,7 +1368,77 @@ export default function Game() {
     const bloodDrops:{mesh:THREE.Mesh;born:number;source:"debris"|"trail"}[]=[];const bloodDropGeometry=new THREE.PlaneGeometry(.16,.16);
     const bloodDropMaterials=[0x6f0710,0x981018,0xc32227].map(color=>new THREE.MeshBasicMaterial({color,transparent:true,opacity:.9,depthWrite:false,side:THREE.DoubleSide}));
     const bodyBlood:{mesh:THREE.Mesh;born:number;life:number}[]=[];
+    const bombScars:{group:THREE.Group;born:number}[]=[];
+    type BomberRun={mesh:THREE.Group;direction:THREE.Vector3;distance:number;nextBlast:number;blastIndex:number;pathStart:THREE.Vector3;markers:THREE.LineSegments[];warningStart:number};
+    const bombers:BomberRun[]=[];
+    const bombMarkerPoints:number[]=[];
+    for(let i=0;i<24;i++){const a=i/24*Math.PI*2,b=(i+1)/24*Math.PI*2;bombMarkerPoints.push(Math.cos(a)*1.3,0,Math.sin(a)*1.3,Math.cos(b)*1.3,0,Math.sin(b)*1.3);}
+    bombMarkerPoints.push(-.72,0,-.72,.72,0,.72,-.72,0,.72,.72,0,-.72);
+    const bombMarkerGeometry=new THREE.BufferGeometry();bombMarkerGeometry.setAttribute("position",new THREE.Float32BufferAttribute(bombMarkerPoints,3));
+    const bombMarkerMaterial=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:.92,depthWrite:false});
+    const craterTextures=Array.from({length:4},(_,variant)=>{
+      const canvas=document.createElement("canvas");canvas.width=canvas.height=256;const context=canvas.getContext("2d")!,random=seeded(9100+variant);
+      context.translate(128,128);
+      context.fillStyle="rgba(5,4,3,.72)";context.beginPath();
+      for(let i=0;i<32;i++){const angle=i/32*Math.PI*2,r=45+(random()-.5)*13;if(i)context.lineTo(Math.cos(angle)*r,Math.sin(angle)*r);else context.moveTo(Math.cos(angle)*r,Math.sin(angle)*r);}context.closePath();context.fill();
+      context.lineCap="round";
+      for(let ring=0;ring<4;ring++){const radius=58+ring*17;context.strokeStyle=`rgba(${ring%2?22:4},${ring%2?17:3},${ring%2?13:2},${.7-ring*.1})`;context.lineWidth=5+random()*4;for(let arc=0;arc<4;arc++){const sector=Math.PI/2,start=arc*sector+.08+random()*.2,end=(arc+1)*sector-.1-random()*.2;context.beginPath();context.ellipse(0,0,radius*(.9+random()*.16),radius*(.9+random()*.16),random()*.25,start,end);context.stroke();}}
+      const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;return texture;
+    });
+    const bomberSkinCanvas=document.createElement("canvas");bomberSkinCanvas.width=bomberSkinCanvas.height=512;
+    const bomberSkinContext=bomberSkinCanvas.getContext("2d")!;
+    const skinGradient=bomberSkinContext.createLinearGradient(0,0,512,512);skinGradient.addColorStop(0,"#8f999c");skinGradient.addColorStop(.5,"#626d70");skinGradient.addColorStop(1,"#414a4d");
+    bomberSkinContext.fillStyle=skinGradient;bomberSkinContext.fillRect(0,0,512,512);
+    bomberSkinContext.strokeStyle="rgba(25,31,33,.55)";bomberSkinContext.lineWidth=2;
+    for(let p=32;p<512;p+=48){bomberSkinContext.beginPath();bomberSkinContext.moveTo(p,0);bomberSkinContext.lineTo(p,512);bomberSkinContext.stroke();bomberSkinContext.beginPath();bomberSkinContext.moveTo(0,p);bomberSkinContext.lineTo(512,p);bomberSkinContext.stroke();}
+    bomberSkinContext.fillStyle="rgba(225,232,232,.55)";
+    for(let x=9;x<512;x+=16)for(let y=9;y<512;y+=16){bomberSkinContext.beginPath();bomberSkinContext.arc(x,y,1.2,0,Math.PI*2);bomberSkinContext.fill();}
+    bomberSkinContext.fillStyle="#172d55";bomberSkinContext.beginPath();bomberSkinContext.arc(130,350,43,0,Math.PI*2);bomberSkinContext.fill();
+    bomberSkinContext.fillStyle="#f2f3ed";bomberSkinContext.beginPath();for(let i=0;i<10;i++){const a=-Math.PI/2+i*Math.PI/5,r=i%2?17:38;bomberSkinContext.lineTo(130+Math.cos(a)*r,350+Math.sin(a)*r);}bomberSkinContext.closePath();bomberSkinContext.fill();
+    bomberSkinContext.font="bold 34px monospace";bomberSkinContext.fillText("USAF",300,92);
+    const bomberSkinTexture=new THREE.CanvasTexture(bomberSkinCanvas);bomberSkinTexture.colorSpace=THREE.SRGBColorSpace;bomberSkinTexture.anisotropy=Math.min(8,renderer.capabilities.getMaxAnisotropy());
     let bloodLoad=0,lastBloodPickup=0;const lastBloodPrint=player.position.clone();
+    const makeB52=()=>{
+      const aircraft=new THREE.Group(),skin=new THREE.MeshStandardMaterial({map:bomberSkinTexture,color:0xb9c0c1,roughness:.68,metalness:.52}),underside=mat(0x41494c),dark=mat(0x171d20);
+      // The B-52 is built around its unmistakable long fuselage, 35-degree
+      // swept wing and eight separate engines rather than a generic flying box.
+      const body=new THREE.Mesh(new THREE.CapsuleGeometry(.72,14,10,24),skin);body.rotation.z=Math.PI/2;body.scale.set(1,1,1.16);body.castShadow=true;aircraft.add(body);
+      const nose=new THREE.Mesh(new THREE.SphereGeometry(1,24,14),skin);nose.position.x=-7.65;nose.scale.set(1.65,.78,.82);aircraft.add(nose);
+      const tailCone=new THREE.Mesh(new THREE.ConeGeometry(.7,4.3,20),underside);tailCone.rotation.z=-Math.PI/2;tailCone.position.x=9;aircraft.add(tailCone);
+      // One continuous, thin 35-degree swept wing gives the correct B-52
+      // planform. The old mirrored ShapeGeometry folded both wings vertically.
+      const wingShape=new THREE.Shape();wingShape.moveTo(-3.8,0);wingShape.lineTo(2.1,15.2);wingShape.lineTo(4.25,15.2);wingShape.lineTo(1.7,3.1);wingShape.lineTo(4.8,0);wingShape.lineTo(1.7,-3.1);wingShape.lineTo(4.25,-15.2);wingShape.lineTo(2.1,-15.2);wingShape.closePath();
+      const wing=new THREE.Mesh(new THREE.ExtrudeGeometry(wingShape,{depth:.14,bevelEnabled:false,curveSegments:2}),skin);wing.rotation.x=-Math.PI/2;wing.position.y=-.04;wing.castShadow=true;aircraft.add(wing);
+      for(const side of [-1,1]){
+        for(const z of [4.8,8.9]){
+          const pylon=box(.75,-.42,side*z,2.2,.16,.42,0x3e4649,aircraft);pylon.rotation.y=-side*.25;
+          for(const offset of [-.55,.55]){
+            const engine=new THREE.Mesh(new THREE.CylinderGeometry(.38,.51,3.25,20),underside);engine.rotation.z=Math.PI/2;engine.position.set(.65,-.72,side*z+offset);engine.castShadow=true;aircraft.add(engine);
+            const intake=new THREE.Mesh(new THREE.TorusGeometry(.455,.07,8,20),dark);intake.rotation.y=Math.PI/2;intake.position.set(-.97,-.72,side*z+offset);aircraft.add(intake);
+            const exhaust=new THREE.Mesh(new THREE.TorusGeometry(.34,.055,8,18),dark);exhaust.rotation.y=Math.PI/2;exhaust.position.set(2.28,-.72,side*z+offset);aircraft.add(exhaust);
+          }
+        }
+      }
+      const tailShape=new THREE.Shape();tailShape.moveTo(6.2,0);tailShape.lineTo(8.5,5.2);tailShape.lineTo(9.8,5.2);tailShape.lineTo(8.9,0);tailShape.lineTo(9.8,-5.2);tailShape.lineTo(8.5,-5.2);tailShape.closePath();
+      const tailPlane=new THREE.Mesh(new THREE.ExtrudeGeometry(tailShape,{depth:.1,bevelEnabled:false}),skin);tailPlane.rotation.x=-Math.PI/2;tailPlane.position.y=.08;aircraft.add(tailPlane);
+      const finShape=new THREE.Shape();finShape.moveTo(6.3,0);finShape.lineTo(9.4,0);finShape.lineTo(8.6,4.25);finShape.lineTo(7.35,4.25);finShape.closePath();
+      const fin=new THREE.Mesh(new THREE.ShapeGeometry(finShape),skin);
+      fin.position.z=0;aircraft.add(fin);
+      for(const z of [-.38,.38]){const window=box(-7.75,.32,z,.6,.27,.32,0x172a31,aircraft);window.rotation.y=z*.35;}
+      for(const z of [-1,1]){box(-5.7,.66,z*.38,1.3,.08,.08,0xc4cccd,aircraft);box(3.8,.68,z*.34,2.2,.055,.07,0x30383a,aircraft);}
+      const dorsalDome=new THREE.Mesh(new THREE.SphereGeometry(.38,16,8),underside);dorsalDome.scale.set(1.8,.45,1);dorsalDome.position.set(2.7,.72,0);aircraft.add(dorsalDome);
+      const antenna=box(5.15,1.05,0,.08,.75,.08,0x22292b,aircraft);antenna.rotation.z=-.18;
+      box(-5.9,-.68,0,2.1,.08,.45,0xb9bec0,aircraft); // pale belly identification stripe
+      aircraft.scale.setScalar(1.08);return aircraft;
+    };
+    const spawnBomber=()=>{
+      const angle=rng()*Math.PI*2,direction=new THREE.Vector3(Math.cos(angle),0,Math.sin(angle)),pathStart=player.position.clone().addScaledVector(direction,-10).setY(.22);
+      const mesh=makeB52();mesh.position.copy(pathStart).addScaledVector(direction,-20).setY(34);mesh.rotation.y=Math.PI-angle;scene.add(mesh);
+      const markers:THREE.LineSegments[]=[];
+      for(let i=0;i<5;i++){const marker=new THREE.LineSegments(bombMarkerGeometry,bombMarkerMaterial);marker.position.copy(pathStart).addScaledVector(direction,i*5).setY(.245);marker.rotation.y=-angle;marker.visible=i===0;scene.add(marker);markers.push(marker);}
+      const warningStart=performance.now();bombers.push({mesh,direction,distance:-20,nextBlast:warningStart+1500,blastIndex:0,pathStart,markers,warningStart});
+      reportNews("军方B-52轰炸机进入城区上空，预计将沿目标轴线实施地毯式轰炸");
+    };
     const onKey=(e:KeyboardEvent)=>{
       if(e.key==="Enter"){
         e.preventDefault();
@@ -1352,8 +1452,8 @@ export default function Game() {
       keys.add(e.key.toLowerCase());
     };
     const offKey=(e:KeyboardEvent)=>keys.delete(e.key.toLowerCase()); window.addEventListener("keydown",onKey);window.addEventListener("keyup",offKey);
-    const onPointerDown=(e:PointerEvent)=>{dragging=true;dragX=e.clientX;renderer.domElement.setPointerCapture(e.pointerId);renderer.domElement.style.cursor="grabbing";};
-    const onPointerMove=(e:PointerEvent)=>{if(!dragging)return;cameraYaw-=THREE.MathUtils.clamp(e.clientX-dragX,-80,80)*.008;dragX=e.clientX;};
+    const onPointerDown=(e:PointerEvent)=>{if(mobileModeRef.current)return;dragging=true;dragX=e.clientX;renderer.domElement.setPointerCapture(e.pointerId);renderer.domElement.style.cursor="grabbing";};
+    const onPointerMove=(e:PointerEvent)=>{if(mobileModeRef.current||!dragging)return;cameraYaw-=THREE.MathUtils.clamp(e.clientX-dragX,-80,80)*.008;dragX=e.clientX;};
     const onPointerUp=(e:PointerEvent)=>{dragging=false;renderer.domElement.releasePointerCapture(e.pointerId);renderer.domElement.style.cursor="grab";};
     renderer.domElement.addEventListener("pointerdown",onPointerDown);
     renderer.domElement.addEventListener("pointermove",onPointerMove);
@@ -1489,6 +1589,40 @@ export default function Game() {
       const light=new THREE.PointLight(0xff721c,18,18,2);light.position.copy(position).setY(2);scene.add(light);
       explosions.push({sprites,sparks,ring,light,age:0,life:3});explosionShake=Math.min(1.4,explosionShake+.85);
     };
+    const detonateBomb=(position:THREE.Vector3)=>{
+      const scar=new THREE.Group();scar.position.copy(position).setY(.225);scene.add(scar);
+      // A single textured quad replaces 15–20 individual ring meshes per
+      // crater while preserving the broken, irregular concentric damage.
+      const craterDisc=new THREE.Mesh(new THREE.PlaneGeometry(10.5,10.5),new THREE.MeshBasicMaterial({map:craterTextures[Math.floor(rng()*craterTextures.length)],transparent:true,opacity:.82,depthWrite:false}));
+      craterDisc.rotation.x=-Math.PI/2;craterDisc.rotation.z=rng()*Math.PI*2;scar.add(craterDisc);
+      bombScars.push({group:scar,born:performance.now()});
+      const sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean;delay?:number;aspect?:number}[]=[],sparks:{mesh:THREE.Mesh;velocity:THREE.Vector3;age:number;life:number}[]=[];
+      const bombParticleCount=mobileLowPower?8:16,bombFlameCount=mobileLowPower?4:7;
+      for(let i=0;i<bombParticleCount;i++){
+        const smoke=i>=bombFlameCount,material=(smoke?explosionSmokeBases:flameSliceBases)[i%3].clone(),sprite=new THREE.Sprite(material),angle=rng()*Math.PI*2;
+        sprite.position.copy(position).add(new THREE.Vector3(Math.cos(angle)*rng()*1.6,.25+rng()*1.2,Math.sin(angle)*rng()*1.6));sprite.scale.setScalar(.01);scene.add(sprite);
+        sprites.push({mesh:sprite,velocity:new THREE.Vector3((rng()-.5)*(smoke?3:5),smoke?2.2+rng()*3.5:2.5+rng()*6,(rng()-.5)*(smoke?3:5)),age:0,life:smoke?5+rng()*1.5:3+rng()*1.4,start:smoke?1.8:.7,end:smoke?9:2.4,smoke,delay:smoke?.72:.48,aspect:smoke?1.25:1.9});
+      }
+      const sparkMaterial=new THREE.MeshBasicMaterial({color:0xffcf61,transparent:true});
+      for(let i=0;i<(mobileLowPower?3:7);i++){const spark=new THREE.Mesh(explosionSparkGeometry,sparkMaterial);spark.position.copy(position);scene.add(spark);sparks.push({mesh:spark,velocity:new THREE.Vector3(rng()-.5,.25+rng(),rng()-.5).normalize().multiplyScalar(7+rng()*12),age:0,life:.5+rng()*.6});}
+      const ring=new THREE.Mesh(explosionRingGeometry,new THREE.MeshBasicMaterial({color:0xffb52f,transparent:true,opacity:.9,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending}));
+      ring.rotation.x=-Math.PI/2;ring.position.copy(position);scene.add(ring);
+      const shockwave=new THREE.Mesh(new THREE.SphereGeometry(1,24,16),new THREE.MeshBasicMaterial({color:0xffb080,transparent:true,opacity:.28,depthWrite:false,side:THREE.DoubleSide,blending:THREE.AdditiveBlending}));
+      shockwave.position.copy(position).setY(1.1);shockwave.scale.setScalar(.2);scene.add(shockwave);
+      const light=new THREE.PointLight(0xffe0a0,36,32,2);light.position.copy(position).setY(2);light.userData.blastIntensity=36;scene.add(light);
+      explosions.push({sprites,sparks,ring,light,age:0,life:7.5,shockwave});explosionShake=Math.min(1.8,explosionShake+1.25);
+      if(!active||Math.hypot(player.position.x-position.x,player.position.z-position.z)>2.3+radius)return;
+      health=Math.max(0,health-34);
+      if(health<=0)return;
+      radius=BASE_RADIUS;velocity.add(new THREE.Vector3(player.position.x-position.x,0,player.position.z-position.z).normalize().multiplyScalar(9));
+      const fragmentCount=5+Math.floor(rng()*16);
+      for(let i=0;i<fragmentCount;i++){
+        const scale=.2+rng()*.2,fragment=new THREE.Mesh(sphereGeo,new THREE.MeshStandardMaterial({map:meatTexture,bumpMap:meatTexture,bumpScale:.16,color:[0x8f1f29,0xb93432,0x6e151d][i%3],roughness:.88}));
+        fragment.scale.setScalar(BASE_RADIUS*scale);fragment.position.copy(player.position).add(new THREE.Vector3((rng()-.5)*1.5,rng()*1.2,(rng()-.5)*1.5));fragment.castShadow=true;scene.add(fragment);
+        debris.push({mesh:fragment,vel:new THREE.Vector3(rng()-.5,.35+rng(),rng()-.5).normalize().multiplyScalar(5+rng()*10),spin:new THREE.Vector3((rng()-.5)*12,(rng()-.5)*12,(rng()-.5)*12),life:3.5+rng()*2,bloody:true,sinking:true,lastTrail:fragment.position.clone()});
+      }
+      bloodLoad=1;reportNews("目标遭航弹直接命中，肉团主体缩回初始体积并发生血肉飞溅");
+    };
     const deployCrashOccupants=(agent:VehicleAgent)=>{
       if(agent.crewDeployed)return;agent.crewDeployed=true;
       if(agent.kind!=="civilian"){
@@ -1613,7 +1747,7 @@ export default function Game() {
     renderer.compile(scene,camera);
     scene.remove(explosionWarmup);
     gameRef.current={start:()=>{active=true;finished=false;startAt=performance.now();setStarted(true);},restart};
-    let performanceFrames=0,performanceSampleAt=performance.now(),lampCullAt=0,lastRenderedAt=0,emergencyLodAt=0;
+    let performanceFrames=0,performanceSampleAt=performance.now(),qualitySampleAt=performance.now(),qualityFrames=0,adaptivePixelRatio=Math.min(devicePixelRatio,mobileLowPower?.7:1),lampCullAt=0,lastRenderedAt=0,emergencyLodAt=0;
     const detailedEmergencyCars=new Set<VehicleAgent>();
     const viewProjection=new THREE.Matrix4(),viewFrustum=new THREE.Frustum();
     function animate(now:number){
@@ -1622,7 +1756,8 @@ export default function Game() {
       // display refresh rate before play was wasting an entire CPU core.
       if(!active&&now-lastRenderedAt<100)return;
       lastRenderedAt=now;
-      const dt=Math.min(.035,(now-last)/1000);last=now; const elapsed=active?(now-startAt)/1000:0; const remain=Math.max(0,90-elapsed);
+      const dt=Math.min(.035,(now-last)/1000);last=now; const elapsed=active?(now-startAt)/1000:0; const remain=Math.max(0,180-elapsed);
+      if(mobileCameraDeltaRef.current)cameraYaw-=mobileCameraDeltaRef.current*dt*2.35;
       // Chain reactions are spread over several frames. Building every particle,
       // texture and wreck for multiple cars in one tick caused 1–3 second stalls.
       if(pendingCarExplosions.length&&now>=nextCarExplosionAt){
@@ -1630,7 +1765,7 @@ export default function Game() {
       }
       // One match travels from morning through noon and sunset into a visibly
       // dark final quarter, when the complete street-light network switches on.
-      const dayProgress=THREE.MathUtils.clamp(elapsed/90,0,1),phaseT=dayProgress<.5?dayProgress*2:(dayProgress-.5)*2;
+      const dayProgress=THREE.MathUtils.clamp(elapsed/180,0,1),phaseT=dayProgress<.5?dayProgress*2:(dayProgress-.5)*2;
       if(dayProgress<.5){
         phaseSky.lerpColors(morningSky,noonSky,phaseT);phaseSun.lerpColors(morningSun,noonSun,phaseT);phaseHemi.lerpColors(morningHemi,noonHemi,phaseT);
       }else if(dayProgress<.76){
@@ -1661,10 +1796,11 @@ export default function Game() {
         const candidates:{fixture:(typeof lampFixtures)[number];distance:number}[]=[];
         for(const fixture of lampFixtures){
           const visible=fixture.fixture.alive&&nightFactor>.015&&viewFrustum.containsPoint(fixture.position)&&fixture.position.distanceToSquared(camera.position)<10500;
-          fixture.beam.visible=visible;fixture.groundPool.visible=visible;
+          fixture.beam.visible=visible&&!mobileLowPower;fixture.groundPool.visible=visible;
           if(visible)candidates.push({fixture,distance:fixture.position.distanceToSquared(player.position)});
         }
         candidates.sort((a,b)=>a.distance-b.distance);
+        if(mobileLowPower)for(let i=8;i<candidates.length;i++)candidates[i].fixture.groundPool.visible=false;
         for(let i=0;i<lampPools.length;i++){
           const candidate=candidates[i];lampPools[i].visible=!!candidate;
           if(candidate)lampPools[i].position.copy(candidate.fixture.position);
@@ -1715,7 +1851,18 @@ export default function Game() {
         }
         const activeHelicopters=helicopters.filter(h=>h.mesh.parent&&h.state!=="standby"&&h.state!=="retreat"&&h.state!=="crash").length;
         if(rage>=4&&activeHelicopters<2&&sinceStart>nextHelicopterDispatch){spawnHelicopter();nextHelicopterDispatch=sinceStart+12000;}
+        if(rage>=5&&sinceStart>=nextBomberDispatch){spawnBomber();nextBomberDispatch=sinceStart+30000;}
         if(sinceStart>nextFireDispatch&&vehicleAgents.filter(v=>v.kind==="fire"&&v.mesh.parent).length<3){spawnEmergency("fire");nextFireDispatch=sinceStart+11000+rng()*7000;}
+      }
+      for(let i=bombers.length-1;i>=0;i--){
+        const bomber=bombers[i];bomber.distance+=14*dt;bomber.mesh.position.copy(bomber.pathStart).addScaledVector(bomber.direction,bomber.distance).setY(34+Math.sin(now*.0015)*.35);
+        const markerPulse=1+Math.sin(now*.009)*.12;for(let markerIndex=bomber.blastIndex;markerIndex<bomber.markers.length;markerIndex++){bomber.markers[markerIndex].visible=now>=bomber.warningStart+markerIndex*200;bomber.markers[markerIndex].scale.setScalar(markerPulse);}
+        if(bomber.blastIndex<5&&now>=bomber.nextBlast){
+          scene.remove(bomber.markers[bomber.blastIndex]);
+          const blast=bomber.pathStart.clone().addScaledVector(bomber.direction,bomber.blastIndex*5);detonateBomb(blast);
+          bomber.blastIndex++;bomber.nextBlast+=200;
+        }
+        if(bomber.distance>45){scene.remove(bomber.mesh,...bomber.markers);bomber.mesh.traverse(object=>{const mesh=object as THREE.Mesh;if(mesh.isMesh){mesh.geometry.dispose();const material=mesh.material as THREE.Material|THREE.Material[];if(Array.isArray(material))material.forEach(item=>item.dispose());else material.dispose();}});bombers.splice(i,1);}
       }
       for(const helicopter of helicopters){
         if(!helicopter.mesh.parent)continue;
@@ -1795,7 +1942,7 @@ export default function Game() {
         for(const agent of vehicleAgents
           .filter(candidate=>(candidate.kind==="police"||candidate.kind==="swat")&&candidate.mesh.parent)
           .sort((a,b)=>a.mesh.position.distanceToSquared(player.position)-b.mesh.position.distanceToSquared(player.position))
-          .slice(0,5))detailedEmergencyCars.add(agent);
+          .slice(0,mobileLowPower?2:5))detailedEmergencyCars.add(agent);
         for(const agent of vehicleAgents){
           const details=agent.mesh.userData.detailMeshes as THREE.Object3D[]|undefined;if(!details)continue;
           const visible=detailedEmergencyCars.has(agent);for(const detail of details)detail.visible=visible;
@@ -2115,14 +2262,14 @@ export default function Game() {
         }
       }
       if(active&&!finished){
-        const inputRight=(keys.has("d")||keys.has("arrowright")?1:0)-(keys.has("a")||keys.has("arrowleft")?1:0);
-        const inputForward=(keys.has("w")||keys.has("arrowup")?1:0)-(keys.has("s")||keys.has("arrowdown")?1:0);
+        const inputRight=(keys.has("d")||keys.has("arrowright")?1:0)-(keys.has("a")||keys.has("arrowleft")?1:0)+mobileMoveRef.current.x;
+        const inputForward=(keys.has("w")||keys.has("arrowup")?1:0)-(keys.has("s")||keys.has("arrowdown")?1:0)+mobileMoveRef.current.y;
         const viewForward=new THREE.Vector3(-Math.sin(cameraYaw),0,-Math.cos(cameraYaw));
         const viewRight=new THREE.Vector3(Math.cos(cameraYaw),0,-Math.sin(cameraYaw));
         const move=viewForward.multiplyScalar(inputForward).addScaledVector(viewRight,inputRight);
         if(stamina<=0)sprintExhausted=true;
         else if(stamina>=25)sprintExhausted=false;
-        const sprinting=keys.has("shift")&&move.lengthSq()>0&&!sprintExhausted;
+        const sprinting=!mobileLowPower&&keys.has("shift")&&move.lengthSq()>0&&!sprintExhausted;
         stamina=THREE.MathUtils.clamp(stamina+(sprinting?-STAMINA_SPRINT_COST_PER_SECOND:STAMINA_REGEN_PER_SECOND)*dt,0,STAMINA_MAX);
         const mass=1+people*.11, maximumSpeed=(sprinting?15:10.5)/Math.pow(mass,.12);
         if(move.lengthSq()){move.normalize();velocity.addScaledVector(move,24/Math.sqrt(mass)*dt);}
@@ -2138,7 +2285,7 @@ export default function Game() {
           for(const bridge of footbridges){
             if(bridge.collapsed)continue;
             const local=bridge.group.worldToLocal(player.position.clone()),across=Math.abs(local.z);
-            const structuralContact=across<3+radius&&((Math.abs(local.x)>7.5&&Math.abs(local.x)<14.5+radius)||(Math.abs(local.x)>17-radius&&Math.abs(local.x)<30+radius));
+            const structuralContact=across<2.2+radius&&Math.abs(local.x)>bridge.halfSpan-2&&Math.abs(local.x)<bridge.stairEnd+radius;
             if(structuralContact&&!bridge.touching){
               bridge.touching=true;bridge.hits++;
               player.position.sub(displacement);velocity.multiplyScalar(-.38);
@@ -2222,7 +2369,8 @@ export default function Game() {
       for(let i=debris.length-1;i>=0;i--){
         const d=debris[i];d.life-=dt;d.vel.y-=12*dt;d.mesh.position.addScaledVector(d.vel,dt);
         d.mesh.rotation.x+=d.spin.x*dt;d.mesh.rotation.y+=d.spin.y*dt;d.mesh.rotation.z+=d.spin.z*dt;
-        if(d.mesh.position.y<.2){
+        if(d.sinking&&d.life<1.25){d.vel.set(0,0,0);d.spin.multiplyScalar(Math.pow(.06,dt));d.mesh.position.y-=dt*1.25;}
+        else if(d.mesh.position.y<.2){
           d.mesh.position.y=.2;d.vel.x*=.58;d.vel.z*=.58;d.vel.y=Math.abs(d.vel.y)*.22;d.spin.multiplyScalar(.58);
           if(d.bloody&&d.lastTrail&&Math.hypot(d.mesh.position.x-d.lastTrail.x,d.mesh.position.z-d.lastTrail.z)>.07&&Math.hypot(d.vel.x,d.vel.z)>.06){
             const trailStart=d.lastTrail.clone(),trailDistance=Math.hypot(d.mesh.position.x-trailStart.x,d.mesh.position.z-trailStart.z);
@@ -2266,11 +2414,13 @@ export default function Game() {
       for(let i=explosions.length-1;i>=0;i--){
         const explosion=explosions[i];explosion.age+=dt;
         for(const particle of explosion.sprites){
-          particle.age+=dt;particle.mesh.position.addScaledVector(particle.velocity,dt);
-          particle.velocity.multiplyScalar(particle.smoke?Math.pow(.55,dt):Math.pow(.18,dt));
-          const progress=Math.min(1,particle.age/particle.life),size=THREE.MathUtils.lerp(particle.start,particle.end,particle.smoke?Math.sqrt(progress):Math.sin(progress*Math.PI)*.7+progress);
-          particle.mesh.scale.setScalar(size);
-          (particle.mesh.material as THREE.SpriteMaterial).opacity=(particle.smoke?.58:.95)*Math.pow(1-progress,particle.smoke?1.25:2.2);
+          particle.age+=dt;const localAge=particle.age-(particle.delay??0);if(localAge<0){(particle.mesh.material as THREE.SpriteMaterial).opacity=0;continue;}
+          particle.mesh.position.addScaledVector(particle.velocity,dt);particle.velocity.multiplyScalar(particle.smoke?Math.pow(.55,dt):Math.pow(.18,dt));
+          const progress=Math.min(1,localAge/particle.life),size=THREE.MathUtils.lerp(particle.start,particle.end,particle.smoke?Math.sqrt(progress):Math.sin(progress*Math.PI)*.7+progress);
+          const jump=particle.smoke?1:.82+.3*Math.sin(now*.024+particle.mesh.id*1.7);
+          if(!particle.smoke){particle.mesh.position.x+=Math.sin(now*.031+particle.mesh.id)*dt*.65;particle.mesh.position.y+=Math.sin(now*.045+particle.mesh.id*2.1)*dt*.8;}
+          particle.mesh.scale.set(size*jump,size*(particle.aspect??1)*(1.05+.34*Math.sin(now*.029+particle.mesh.id)),1);
+          (particle.mesh.material as THREE.SpriteMaterial).opacity=(particle.smoke?.78:.98)*Math.pow(1-progress,particle.smoke?.8:1.45);
         }
         for(const spark of explosion.sparks){
           spark.age+=dt;spark.velocity.y-=10*dt;spark.mesh.position.addScaledVector(spark.velocity,dt);
@@ -2279,13 +2429,25 @@ export default function Game() {
         }
         const ringProgress=Math.min(1,explosion.age/.65);explosion.ring.scale.setScalar(1+ringProgress*8);
         (explosion.ring.material as THREE.MeshBasicMaterial).opacity=.85*Math.pow(1-ringProgress,2);
-        explosion.light.intensity=18*Math.pow(Math.max(0,1-explosion.age/.55),2);
+        if(explosion.shockwave){
+          const expanding=explosion.age<.38,shockProgress=expanding?explosion.age/.38:THREE.MathUtils.clamp((explosion.age-.38)/.34,0,1);
+          explosion.shockwave.scale.setScalar(expanding?THREE.MathUtils.lerp(.2,7.8,THREE.MathUtils.smoothstep(shockProgress,0,1)):THREE.MathUtils.lerp(7.8,2.8,THREE.MathUtils.smoothstep(shockProgress,0,1)));
+          const shockMaterial=explosion.shockwave.material as THREE.MeshBasicMaterial;shockMaterial.color.setHex(expanding?0xff9d73:0xfff0c2);shockMaterial.opacity=explosion.age<.72?(expanding?.2:.48*(1-shockProgress)+.12):0;
+        }
+        explosion.light.intensity=(explosion.light.userData.blastIntensity??18)*Math.pow(Math.max(0,1-explosion.age/.55),2);
         if(explosion.age>=explosion.life){
           for(const particle of explosion.sprites){scene.remove(particle.mesh);(particle.mesh.material as THREE.Material).dispose();}
           for(const spark of explosion.sparks)scene.remove(spark.mesh);
           if(explosion.sparks[0])(explosion.sparks[0].mesh.material as THREE.Material).dispose();
-          scene.remove(explosion.ring,explosion.light);(explosion.ring.material as THREE.Material).dispose();explosions.splice(i,1);
+          scene.remove(explosion.ring,explosion.light);(explosion.ring.material as THREE.Material).dispose();
+          if(explosion.shockwave){scene.remove(explosion.shockwave);explosion.shockwave.geometry.dispose();(explosion.shockwave.material as THREE.Material).dispose();}
+          explosions.splice(i,1);
         }
+      }
+      for(let i=bombScars.length-1;i>=0;i--){
+        const scar=bombScars[i],age=(now-scar.born)/1000,fade=THREE.MathUtils.clamp((58-age)/12,0,1);
+        scar.group.traverse(object=>{const mesh=object as THREE.Mesh;if(mesh.isMesh)(mesh.material as THREE.MeshBasicMaterial).opacity=Math.min((mesh.material as THREE.MeshBasicMaterial).opacity,fade*.72);});
+        if(age>=58){scene.remove(scar.group);scar.group.traverse(object=>{const mesh=object as THREE.Mesh;if(mesh.isMesh){mesh.geometry.dispose();(mesh.material as THREE.Material).dispose();}});bombScars.splice(i,1);}
       }
       explosionShake=Math.max(0,explosionShake-dt*2.2);
       for(let i=fallenTrees.length-1;i>=0;i--){
@@ -2350,8 +2512,14 @@ export default function Game() {
       const pulse=1+Math.sin(now*.006)*.018;wormMass.scale.setScalar(pulse);
       if(explosionShake>0){camera.position.x+=(rng()-.5)*explosionShake;camera.position.y+=(rng()-.5)*explosionShake*.55;camera.position.z+=(rng()-.5)*explosionShake;}
       renderer.info.reset();
-      renderer.setRenderTarget(renderTarget);renderer.render(scene,camera);renderer.setRenderTarget(null);renderer.render(postScene,postCamera);
-      performanceFrames++;
+      if(mobileLowPower)renderer.render(scene,camera);
+      else{renderer.setRenderTarget(renderTarget);renderer.render(scene,camera);renderer.setRenderTarget(null);renderer.render(postScene,postCamera);}
+      performanceFrames++;qualityFrames++;
+      if(now-qualitySampleAt>=2000){
+        const measuredFps=qualityFrames*1000/(now-qualitySampleAt),minimumRatio=mobileLowPower?.42:.58,maximumRatio=Math.min(devicePixelRatio,mobileLowPower?.72:1),nextRatio=measuredFps<29?Math.max(minimumRatio,adaptivePixelRatio-.12):measuredFps>48?Math.min(maximumRatio,adaptivePixelRatio+.05):adaptivePixelRatio;
+        if(nextRatio!==adaptivePixelRatio){adaptivePixelRatio=nextRatio;renderer.setPixelRatio(adaptivePixelRatio);renderer.setSize(host.clientWidth,host.clientHeight);renderer.getDrawingBufferSize(drawingSize);renderTarget.setSize(drawingSize.x,drawingSize.y);postMaterial.uniforms.resolution.value.copy(drawingSize);}
+        qualityFrames=0;qualitySampleAt=now;
+      }
       if(now-performanceSampleAt>=500&&performanceRef.current){
         let modelCount=0;
         scene.traverse(object=>{if((object as THREE.Mesh).isMesh&&object.visible)modelCount++;});
@@ -2365,13 +2533,20 @@ export default function Game() {
     return()=>{window.removeEventListener("resize",resize);window.removeEventListener("keydown",onKey);window.removeEventListener("keyup",offKey);renderer.domElement.removeEventListener("pointerdown",onPointerDown);renderer.domElement.removeEventListener("pointermove",onPointerMove);renderer.domElement.removeEventListener("pointerup",onPointerUp);renderer.domElement.removeEventListener("pointercancel",onPointerUp);renderTarget.dispose();postMaterial.dispose();renderer.dispose();host.removeChild(renderer.domElement);};
   },[]);
 
-  return <main className="game-shell">
+  const notorietyValue=hud.score+hud.people*4000+hud.destroyed*18000+(hud.size-1)*70000;
+  const notorietyTitles=["街头凶团","血肉收割者","城市屠夫","灭城灾厄","末日化身"];
+  const notorietyIndex=notorietyValue>=900000?4:notorietyValue>=520000?3:notorietyValue>=260000?2:notorietyValue>=90000?1:0;
+  return <main className={`game-shell${mobileMode?" mobile":""}`}>
     <div ref={mount} className="viewport" aria-label="城市破坏游戏画面" />
     <header className="topbar"><div><span className="eyebrow">CITY DESTRUCTION</span><strong>{hud.destroyed}<small> BUILDINGS</small></strong></div><div className="rage" aria-label={`RAGE ${hud.rage} / 5`}><span>RAGE</span><i>{[1,2,3,4,5].map(level=><b key={level} className={level<=hud.rage?"active":""}/>)}</i></div><div className="timer">{String(Math.floor(hud.time/60)).padStart(2,"0")}:{String(hud.time%60).padStart(2,"0")}</div></header>
-    <section className="broadcast"><span className="live">LIVE</span><div><small>ESTIMATED DAMAGE</small><strong>${hud.score.toLocaleString()}</strong></div><div><small>HUMAN CASUALTIES</small><strong>{hud.people}</strong></div><div className="ticker"><small>LATEST DEVELOPMENT</small><NewsTicker headlines={hud.headlines} revision={hud.newsRevision}/></div><div ref={performanceRef} className="performance"><span>模型 <b>—</b></span><span>面 <b>—</b></span><span>FPS <b>—</b></span></div></section>
+    <section className="broadcast"><span className="live">LIVE</span><div><small>ESTIMATED DAMAGE</small><strong className="hud-pop" key={`score-${hud.score}`}>${hud.score.toLocaleString()}</strong></div><div><small>HUMAN CASUALTIES</small><strong className="hud-pop" key={`people-${hud.people}`}>{hud.people}</strong></div><div className="ticker"><small>LATEST DEVELOPMENT</small><NewsTicker headlines={hud.headlines} revision={hud.newsRevision}/></div><div ref={performanceRef} className="performance"><span>模型 <b>—</b></span><span>面 <b>—</b></span><span>FPS <b>—</b></span></div></section>
     {started&&!ended&&<div className="combo" key={hud.combo}>{hud.combo>2&&<>COMBO <b>×{hud.combo}</b></>}</div>}
-    {started&&!ended&&<div className="vitals"><div className="health" aria-label={`生命 ${Math.round(hud.health)}%`}><span>生命</span><i><b style={{width:`${hud.health}%`}}/></i></div><div className="stamina" aria-label={`体力 ${Math.round(hud.stamina)}%`}><span>体力</span><i><b style={{width:`${hud.stamina}%`}}/></i></div></div>}
-    {!started&&!ended&&<section className="menu"><p className="kicker">A CITY HAS 90 SECONDS LEFT</p><h1>暴躁<br/><em>肉团子</em></h1><p>吞噬街道，撕碎城市。越大，就能摧毁越大的目标。</p><button onClick={()=>gameRef.current.start()}>开始灾难 <span>ENTER</span></button><div className="controls"><span><kbd>WASD</kbd> 移动</span><span><kbd>SHIFT</kbd> 冲刺</span><span><kbd>鼠标拖动</kbd> 旋转视角</span></div></section>}
-    {ended&&<section className="menu result"><p className="kicker">90 SECONDS OF TOTAL CHAOS</p><h2>CITY REPORT</h2><div className="stats"><span>损失金额<b>${hud.score.toLocaleString()}</b></span><span>建筑摧毁<b>{hud.destroyed}</b></span><span>最大体积<b>{hud.size.toFixed(1)}×</b></span></div><button onClick={()=>gameRef.current.restart()}>再次破坏</button></section>}
+    {started&&!ended&&<div className="vitals"><div className="health" aria-label={`生命 ${Math.round(hud.health)}%`}><span>生命</span><i><b style={{width:`${hud.health}%`}}/></i></div>{!mobileMode&&<div className="stamina" aria-label={`体力 ${Math.round(hud.stamina)}%`}><span>体力</span><i><b style={{width:`${hud.stamina}%`}}/></i></div>}</div>}
+    {mobileMode&&started&&!ended&&<>
+      <div className="touch-pad move-pad" aria-label="移动摇杆" onPointerDown={event=>{event.currentTarget.setPointerCapture(event.pointerId);updateMoveStick(event);}} onPointerMove={event=>{if(event.currentTarget.hasPointerCapture(event.pointerId))updateMoveStick(event);}} onPointerUp={stopMoveStick} onPointerCancel={stopMoveStick}><i style={{transform:`translate(${moveKnob.x}px,${moveKnob.y}px)`}}/></div>
+      <div className="touch-pad camera-pad" aria-label="镜头摇杆" onPointerDown={event=>{event.currentTarget.setPointerCapture(event.pointerId);cameraPointerRef.current={x:event.clientX,y:event.clientY};updateCameraStick(event);}} onPointerMove={event=>{if(event.currentTarget.hasPointerCapture(event.pointerId))updateCameraStick(event);}} onPointerUp={stopCameraStick} onPointerCancel={stopCameraStick}><i className="camera-knob" style={{transform:`translate(${cameraKnob.x}px,${cameraKnob.y}px)`}}><b/><em/></i></div>
+    </>}
+    {!started&&!ended&&<section className="menu"><p className="kicker">A CITY HAS 3 MINUTES LEFT</p><h1>暴躁<br/><em>肉团子</em></h1><p>吞噬街道，撕碎城市。越大，就能摧毁越大的目标。</p><button onClick={()=>gameRef.current.start()}>开始灾难 {!mobileMode&&<span>ENTER</span>}</button>{mobileMode?<div className="mobile-hint">左侧摇杆移动 · 右侧摇杆旋转镜头</div>:<div className="controls"><span><kbd>WASD</kbd> 移动</span><span><kbd>SHIFT</kbd> 冲刺</span><span><kbd>鼠标拖动</kbd> 旋转视角</span></div>}</section>}
+    {ended&&<section className="menu result"><p className="kicker">3 MINUTES OF TOTAL CHAOS</p><div className={`notoriety tier-${notorietyIndex}`}>{notorietyTitles[notorietyIndex]}</div><h2>CITY REPORT</h2><div className="stats"><span>损失金额<b>${hud.score.toLocaleString()}</b></span><span>建筑摧毁<b>{hud.destroyed}</b></span><span>最大体积<b>{hud.size.toFixed(1)}×</b></span></div><button onClick={()=>gameRef.current.restart()}>再次破坏</button></section>}
   </main>;
 }

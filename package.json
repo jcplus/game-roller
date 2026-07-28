@@ -1,6 +1,6 @@
 {
   "name": "rage-meatball",
-  "version": "0.18.1",
+  "version": "0.18.4",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

@@ -979,9 +979,20 @@ export default function Game() {
     const roadVals=[-54,0,54];
     // Only civilian traffic is present at load. Emergency units are dispatched
     // from beyond the visible city after the disaster begins.
+    const initialVehiclePositions:THREE.Vector3[]=[];
+    const INITIAL_VEHICLE_CLEARANCE=5.6;
     for(let i=0;i<26;i++) {
-      const vertical=rng()>.5, lane=(rng()>.5?1:-1)*4.2, main=roadVals[Math.floor(rng()*3)], along=-78+rng()*156;
-      const x=vertical?main+lane:along, z=vertical?along:main+lane, rot=vertical?0:Math.PI/2;
+      let vertical=false,x=0,z=0,placed=false;
+      // Sample before constructing the model so every starting car has enough
+      // separation from existing traffic, including cars on crossing roads.
+      for(let attempt=0;attempt<240;attempt++){
+        vertical=rng()>.5;const lane=(rng()>.5?1:-1)*4.2,main=roadVals[Math.floor(rng()*3)],along=-78+rng()*156;
+        x=vertical?main+lane:along;z=vertical?along:main+lane;
+        if(initialVehiclePositions.every(position=>Math.hypot(x-position.x,z-position.z)>=INITIAL_VEHICLE_CLEARANCE)){placed=true;break;}
+      }
+      if(!placed)continue;
+      initialVehiclePositions.push(new THREE.Vector3(x,0,z));
+      const rot=vertical?0:Math.PI/2;
       const car=addCar(x,z,[0xd7c850,0xa93f39,0x507c8b,0xddd9c7,0x24292e][i%5],rot);
       const direction=(rng()>.5?1:-1) as 1|-1,heading=vertical?(direction>0?Math.PI/2:-Math.PI/2):(direction>0?0:Math.PI);
       vehicleAgents.push({mesh:car,kind:"civilian",axis:vertical?"z":"x",direction,speed:0,maxSpeed:8.5+rng()*2.5,acceleration:2.8,heading,targetHeading:heading,state:"road",crewDeployed:false,turnCooldown:0,brakeSpeed:0,reverseTimer:0});
@@ -1529,7 +1540,15 @@ export default function Game() {
         attribute.needsUpdate=true;strand.mesh.geometry.computeVertexNormals();
       }
     };
+    const activeViewPoint=new THREE.Vector3();
+    const isInActiveView=(position:THREE.Vector3,margin=.16)=>{
+      activeViewPoint.copy(position).project(camera);
+      return activeViewPoint.z>=-1&&activeViewPoint.z<=1&&Math.abs(activeViewPoint.x)<=1+margin&&Math.abs(activeViewPoint.y)<=1+margin;
+    };
     const explodeCar=(car:Target)=>{
+      // Collected cars outside the camera are resolved silently. Creating an
+      // unseen wreck, particles and camera shake only burns CPU/GPU time.
+      if(!isInActiveView(car.mesh.position,.12))return;
       carsDestroyed++;reportNews(`现场车辆损毁数量已上升至 ${carsDestroyed} 辆`);
       const position=car.mesh.position.clone();position.y=.65;
       const sprites:{mesh:THREE.Sprite;velocity:THREE.Vector3;age:number;life:number;start:number;end:number;smoke:boolean}[]=[];
@@ -1590,6 +1609,9 @@ export default function Game() {
       explosions.push({sprites,sparks,ring,light,age:0,life:3});explosionShake=Math.min(1.4,explosionShake+.85);
     };
     const detonateBomb=(position:THREE.Vector3)=>{
+      // Bomb runs may cross the far side of the city. Off-screen impacts have no
+      // gameplay or visual effect and must not create particles/collisions.
+      if(!isInActiveView(position,.08))return;
       const scar=new THREE.Group();scar.position.copy(position).setY(.225);scene.add(scar);
       // A single textured quad replaces 15–20 individual ring meshes per
       // crater while preserving the broken, irregular concentric damage.
@@ -1658,6 +1680,7 @@ export default function Game() {
       return point.distanceTo(a.clone().addScaledVector(ab,t));
     };
     const powerPoleImpact=(fixture:StreetFixture)=>{
+      if(!isInActiveView(fixture.group.position,.08))return;
       const impact=fixture.group.position.clone().add(new THREE.Vector3(0,.25,0));
       reportNews("现场电线杆倒塌，供电线路发生故障");
       for(let i=0;i<24;i++){
@@ -1758,6 +1781,11 @@ export default function Game() {
       lastRenderedAt=now;
       const dt=Math.min(.035,(now-last)/1000);last=now; const elapsed=active?(now-startAt)/1000:0; const remain=Math.max(0,180-elapsed);
       if(mobileCameraDeltaRef.current)cameraYaw-=mobileCameraDeltaRef.current*dt*2.35;
+      // Simulation culling uses the same camera as this frame. A small margin
+      // prevents objects at the screen edge from repeatedly sleeping/waking.
+      const simulationCameraDistance=54+radius*.8;
+      const simulationCameraPosition=new THREE.Vector3(player.position.x+Math.sin(cameraYaw)*simulationCameraDistance,48+radius*1.5,player.position.z+Math.cos(cameraYaw)*simulationCameraDistance);
+      camera.position.lerp(simulationCameraPosition,1-Math.pow(.001,dt));camera.lookAt(player.position.x,0,player.position.z);camera.updateMatrixWorld();
       // Chain reactions are spread over several frames. Building every particle,
       // texture and wreck for multiple cars in one tick caused 1–3 second stalls.
       if(pendingCarExplosions.length&&now>=nextCarExplosionAt){
@@ -1955,7 +1983,10 @@ export default function Game() {
         const insideCity=Math.abs(agent.mesh.position.x)<=82&&Math.abs(agent.mesh.position.z)<=82;
         // Visibility follows the boundary continuously: dispatches appear on
         // entry and any vehicle leaving the authored city disappears again.
-        agent.mesh.visible=insideCity;if(insideCity)agent.mesh.userData.waitingForCityEntry=false;
+        const inActiveView=insideCity&&isInActiveView(agent.mesh.position,.22);
+        agent.mesh.visible=inActiveView;
+        if(insideCity)agent.mesh.userData.waitingForCityEntry=false;
+        if(!inActiveView)continue;
         agent.turnCooldown=Math.max(0,agent.turnCooldown-dt);
         const distToThreat=agent.mesh.position.distanceTo(player.position),previousState=agent.state;
         if(agent.kind==="civilian"&&active&&distToThreat<11+radius*1.5){
@@ -2026,11 +2057,11 @@ export default function Game() {
       }
       // Vehicle/vehicle and vehicle/building impacts share one crash lifecycle.
       for(let i=0;i<vehicleAgents.length;i++){
-        const a=vehicleAgents[i];if(!a.mesh.parent||a.state==="crashed")continue;
-        for(let j=i+1;j<vehicleAgents.length;j++){const b=vehicleAgents[j];if(!b.mesh.parent||b.state==="crashed")continue;if(a.mesh.position.distanceToSquared(b.mesh.position)<13){const impact=a.mesh.position.clone().lerp(b.mesh.position,.5);igniteCrash(a,impact);igniteCrash(b,impact);}}
+        const a=vehicleAgents[i];if(!a.mesh.parent||!a.mesh.visible||a.state==="crashed")continue;
+        for(let j=i+1;j<vehicleAgents.length;j++){const b=vehicleAgents[j];if(!b.mesh.parent||!b.mesh.visible||b.state==="crashed")continue;if(a.mesh.position.distanceToSquared(b.mesh.position)<13){const impact=a.mesh.position.clone().lerp(b.mesh.position,.5);igniteCrash(a,impact);igniteCrash(b,impact);}}
         for(const obstacle of targets){if(!obstacle.alive||obstacle.kind!=="building")continue;const distance=Math.hypot(a.mesh.position.x-obstacle.mesh.position.x,a.mesh.position.z-obstacle.mesh.position.z);if(distance<obstacle.radius+1.4){igniteCrash(a,a.mesh.position.clone().lerp(obstacle.mesh.position,.35));break;}}
       }
-      for(const evacuee of evacuees){evacuee.gait+=dt*13;const away=evacuee.mesh.position.clone().sub(player.position).setY(0).normalize();evacuee.direction.lerp(away,.12).normalize();evacuee.mesh.position.addScaledVector(evacuee.direction,5.5*dt);evacuee.mesh.rotation.y=Math.atan2(evacuee.direction.x,evacuee.direction.z);evacuee.mesh.position.y=.05+Math.abs(Math.sin(evacuee.gait))*.08;}
+      for(const evacuee of evacuees){const visible=isInActiveView(evacuee.mesh.position,.18);evacuee.mesh.visible=visible;if(!visible)continue;evacuee.gait+=dt*13;const away=evacuee.mesh.position.clone().sub(player.position).setY(0).normalize();evacuee.direction.lerp(away,.12).normalize();evacuee.mesh.position.addScaledVector(evacuee.direction,5.5*dt);evacuee.mesh.rotation.y=Math.atan2(evacuee.direction.x,evacuee.direction.z);evacuee.mesh.position.y=.05+Math.abs(Math.sin(evacuee.gait))*.08;}
       for(let i=skidMarks.length-1;i>=0;i--){const mark=skidMarks[i],age=(now-mark.born)/1000;(mark.mesh.material as THREE.MeshBasicMaterial).opacity=.62*THREE.MathUtils.clamp((18-age)/7,0,1);if(age>18){scene.remove(mark.mesh);mark.mesh.geometry.dispose();(mark.mesh.material as THREE.Material).dispose();skidMarks.splice(i,1);}}
       const placeCylinderBetween=(mesh:THREE.Mesh,start:THREE.Vector3,end:THREE.Vector3)=>{
         const direction=end.clone().sub(start),length=direction.length();
@@ -2046,6 +2077,8 @@ export default function Game() {
       };
       for(const responder of responders){
         if(responder.retired)continue;
+        const responderVisible=isInActiveView(responder.mesh.position,.18);responder.mesh.visible=responderVisible;
+        if(!responderVisible)continue;
         if(responder.kind==="firefighter"&&(responder.source.state==="crashed"||!responder.source.mesh.parent)){
           removeFirefighterEquipment(responder);responder.retired=true;
           const direction=responder.mesh.position.clone().sub(responder.source.mesh.position).setY(0);
@@ -2154,6 +2187,8 @@ export default function Game() {
       for(const pedestrian of pedestrians){
         if(!pedestrian.target.alive)continue;
         const person=pedestrian.target.mesh;
+        const pedestrianVisible=isInActiveView(person.position,.18);person.visible=pedestrianVisible;
+        if(!pedestrianVisible)continue;
         const away=person.position.clone().sub(player.position);away.y=0;
         const distance=away.length();
         if(active&&pedestrian.state!=="run"&&pedestrian.state!=="alert"&&distance<12+radius*1.35){
@@ -2507,8 +2542,6 @@ export default function Game() {
         material.opacity=Math.min(material.opacity,THREE.MathUtils.clamp((life-age)/12,0,1)*.9);
         if(age>=life){scene.remove(stain.mesh);if(!bloodDropMaterials.includes(material))material.dispose();bloodDrops.splice(i,1);}
       }
-      const cameraDistance=54+radius*.8;
-      const desired=new THREE.Vector3(player.position.x+Math.sin(cameraYaw)*cameraDistance,48+radius*1.5,player.position.z+Math.cos(cameraYaw)*cameraDistance);camera.position.lerp(desired,1-Math.pow(.001,dt));camera.lookAt(player.position.x,0,player.position.z);
       const pulse=1+Math.sin(now*.006)*.018;wormMass.scale.setScalar(pulse);
       if(explosionShake>0){camera.position.x+=(rng()-.5)*explosionShake;camera.position.y+=(rng()-.5)*explosionShake*.55;camera.position.z+=(rng()-.5)*explosionShake;}
       renderer.info.reset();
